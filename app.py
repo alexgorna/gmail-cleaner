@@ -4,7 +4,7 @@ import pandas as pd
 import re
 import time
 import random
-import socket  # <--- NEW IMPORT
+import socket
 from werkzeug.middleware.proxy_fix import ProxyFix
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response, stream_with_context
 from google_auth_oauthlib.flow import Flow
@@ -12,9 +12,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# --- CRITICAL FIX: Set Global Timeout ---
-# This prevents the app from hanging forever if Google stops responding.
-# It will raise a timeout error after 15s, triggering our retry logic.
+# Global timeout to catch zombies
 socket.setdefaulttimeout(15) 
 
 if os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'):
@@ -83,7 +81,6 @@ def scan_stream():
                 request = service.users().messages().list_next(request, response)
                 yield f"data: {json.dumps({'status': 'counting', 'count': len(messages)})}\n\n"
             except Exception:
-                # Basic protection for scanning too
                 break
         
         total_messages = len(messages)
@@ -165,10 +162,8 @@ def apply_actions():
                         continue
                     raise e
                 except Exception as e:
-                    # Catch TIMEOUTS here
                     wait_time = 2 ** retries
-                    error_name = type(e).__name__ # e.g., 'TimeoutError'
-                    yield {'log': f"  - Network Error ({error_name}). Retrying in {wait_time}s..."}
+                    yield {'log': f"  - Connection unstable ({type(e).__name__}). Retrying in {wait_time}s..."}
                     time.sleep(wait_time)
                     retries += 1
             raise Exception("Max retries exceeded.")
@@ -187,18 +182,32 @@ def apply_actions():
                     yield json.dumps({"msg": "  - Moving emails to Trash..."}) + "\n"
                     
                     msgs = []
-                    for output in execute_request(service.users().messages().list(userId='me', q=f"from:{email}")):
+                    # Get ALL pages of messages (limited to first 500 to prevent crazy loops)
+                    list_req = service.users().messages().list(userId='me', q=f"from:{email}", maxResults=500)
+                    for output in execute_request(list_req):
                         if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
                         elif 'result' in output: msgs = output['result'].get('messages', [])
 
                     if msgs:
-                        ids = [m['id'] for m in msgs]
-                        for output in execute_request(service.users().messages().batchModify(
-                            userId='me', body={'ids': ids, 'addLabelIds': ['TRASH']}
-                        )):
-                            if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
+                        all_ids = [m['id'] for m in msgs]
+                        total_trashed = 0
                         
-                        yield json.dumps({"msg": f"  - SUCCESS: Trashed {len(ids)} emails."}) + "\n"
+                        # --- CHUNKING LOGIC ---
+                        CHUNK_SIZE = 50
+                        for i in range(0, len(all_ids), CHUNK_SIZE):
+                            chunk_ids = all_ids[i:i + CHUNK_SIZE]
+                            
+                            for output in execute_request(service.users().messages().batchModify(
+                                userId='me', body={'ids': chunk_ids, 'addLabelIds': ['TRASH']}
+                            )):
+                                if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
+                            
+                            total_trashed += len(chunk_ids)
+                            # Feedback for every chunk
+                            yield json.dumps({"msg": f"    ...trashed {total_trashed} so far..."}) + "\n"
+                            time.sleep(0.2) # Breath between chunks
+                        
+                        yield json.dumps({"msg": f"  - SUCCESS: Trashed {total_trashed} emails total."}) + "\n"
                     else:
                         yield json.dumps({"msg": "  - No emails found to delete."}) + "\n"
 
@@ -215,17 +224,14 @@ def apply_actions():
                             for output in execute_request(service.users().labels().create(userId='me', body={'name': label_name})):
                                 if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
                                 elif 'result' in output: created = output['result']
-                            
                             label_id = created['id']
                             yield json.dumps({"msg": "  - Label created successfully."}) + "\n"
                         except HttpError:
                             yield json.dumps({"msg": f"  - Label '{label_name}' likely exists. Fetching ID..."}) + "\n"
-                            
                             lbls = []
                             for output in execute_request(service.users().labels().list(userId='me')):
                                 if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
                                 elif 'result' in output: lbls = output['result'].get('labels', [])
-                            
                             existing = next((l for l in lbls if l['name'].lower() == label_name.lower()), None)
                             if existing: label_id = existing['id']
                     else:
@@ -242,7 +248,6 @@ def apply_actions():
                         try:
                             for output in execute_request(service.users().settings().filters().create(userId='me', body=filter_body)):
                                 if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
-                            
                             yield json.dumps({"msg": "  - Filter created."}) + "\n"
                         except Exception as e: 
                             yield json.dumps({"msg": f"  - Filter Warning: {str(e)}"}) + "\n"
@@ -250,18 +255,29 @@ def apply_actions():
                         yield json.dumps({"msg": "  - Moving existing emails..."}) + "\n"
                         
                         msgs = []
-                        for output in execute_request(service.users().messages().list(userId='me', q=f"from:{email}")):
+                        list_req = service.users().messages().list(userId='me', q=f"from:{email}", maxResults=500)
+                        for output in execute_request(list_req):
                              if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
                              elif 'result' in output: msgs = output['result'].get('messages', [])
 
                         if msgs:
-                            ids = [m['id'] for m in msgs]
-                            batch_body = {'ids': ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}
+                            all_ids = [m['id'] for m in msgs]
+                            total_moved = 0
                             
-                            for output in execute_request(service.users().messages().batchModify(userId='me', body=batch_body)):
-                                if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
+                            # --- CHUNKING LOGIC ---
+                            CHUNK_SIZE = 50
+                            for i in range(0, len(all_ids), CHUNK_SIZE):
+                                chunk_ids = all_ids[i:i + CHUNK_SIZE]
+                                batch_body = {'ids': chunk_ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}
                                 
-                            yield json.dumps({"msg": f"  - SUCCESS: Moved {len(ids)} emails."}) + "\n"
+                                for output in execute_request(service.users().messages().batchModify(userId='me', body=batch_body)):
+                                    if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
+                                
+                                total_moved += len(chunk_ids)
+                                yield json.dumps({"msg": f"    ...moved {total_moved} so far..."}) + "\n"
+                                time.sleep(0.2)
+
+                            yield json.dumps({"msg": f"  - SUCCESS: Moved {total_moved} emails total."}) + "\n"
                         else:
                             yield json.dumps({"msg": "  - No existing emails to move."}) + "\n"
 

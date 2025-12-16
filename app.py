@@ -5,19 +5,14 @@ import re
 import time
 import random
 import socket
+import httplib2 # <--- NEW
+import google_auth_httplib2 # <--- NEW
 from werkzeug.middleware.proxy_fix import ProxyFix
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response, stream_with_context
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-
-# Global timeout to catch zombies
-socket.setdefaulttimeout(15) 
-
-if os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'):
-    with open('client_secret.json', 'w') as f:
-        f.write(os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'))
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -31,9 +26,25 @@ SCOPES = [
     'https://www.googleapis.com/auth/gmail.settings.basic'
 ]
 
+# Write secrets to file if env var exists
+if os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'):
+    with open('client_secret.json', 'w') as f:
+        f.write(os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'))
+
 def get_creds():
     if 'credentials' not in session: return None
     return Credentials(**session['credentials'])
+
+def get_service():
+    """Creates a service with a HARD timeout to prevent hanging."""
+    creds = get_creds()
+    if not creds: return None
+    
+    # Force a 10-second timeout on the network level
+    http = httplib2.Http(timeout=10)
+    authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
+    
+    return build('gmail', 'v1', requestBuilder=google_auth_httplib2.Request, http=authorized_http)
 
 @app.route('/')
 def index():
@@ -63,12 +74,11 @@ def callback():
 
 @app.route('/api/scan_stream')
 def scan_stream():
-    creds = get_creds()
-    if not creds: 
+    if not get_creds(): 
         return Response("data: " + json.dumps({'error': 'Not logged in'}) + "\n\n", mimetype='text/event-stream')
 
     def generate():
-        service = build('gmail', 'v1', credentials=creds)
+        service = get_service()
         
         messages = []
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
@@ -131,8 +141,7 @@ def scan_stream():
 
 @app.route('/api/get_labels')
 def get_labels():
-    creds = get_creds()
-    service = build('gmail', 'v1', credentials=creds)
+    service = get_service()
     results = service.users().labels().list(userId='me').execute()
     labels = results.get('labels', [])
     labels.sort(key=lambda x: x['name'].lower())
@@ -140,15 +149,15 @@ def get_labels():
 
 @app.route('/api/apply_actions', methods=['POST'])
 def apply_actions():
-    creds = get_creds()
     actions = request.json 
 
     def generate_updates():
-        service = build('gmail', 'v1', credentials=creds)
+        service = get_service()
         
+        # Helper: Execute with Retry AND Timeout Handling
         def execute_request(request_obj):
             retries = 0
-            max_retries = 5
+            max_retries = 3 # Reduce retries to fail faster
             while retries < max_retries:
                 try:
                     yield {'result': request_obj.execute()}
@@ -162,11 +171,12 @@ def apply_actions():
                         continue
                     raise e
                 except Exception as e:
+                    # Capture Socket Timeouts here
                     wait_time = 2 ** retries
-                    yield {'log': f"  - Connection unstable ({type(e).__name__}). Retrying in {wait_time}s..."}
+                    yield {'log': f"  - Network timeout ({type(e).__name__}). Retrying in {wait_time}s..."}
                     time.sleep(wait_time)
                     retries += 1
-            raise Exception("Max retries exceeded.")
+            raise Exception("Max retries exceeded. Connection lost.")
 
         yield json.dumps({"msg": "Starting to process actions..."}) + "\n"
 
@@ -182,7 +192,7 @@ def apply_actions():
                     yield json.dumps({"msg": "  - Moving emails to Trash..."}) + "\n"
                     
                     msgs = []
-                    # Get ALL pages of messages (limited to first 500 to prevent crazy loops)
+                    # Fetch
                     list_req = service.users().messages().list(userId='me', q=f"from:{email}", maxResults=500)
                     for output in execute_request(list_req):
                         if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
@@ -191,21 +201,17 @@ def apply_actions():
                     if msgs:
                         all_ids = [m['id'] for m in msgs]
                         total_trashed = 0
+                        CHUNK_SIZE = 25 # Smaller chunks
                         
-                        # --- CHUNKING LOGIC ---
-                        CHUNK_SIZE = 50
                         for i in range(0, len(all_ids), CHUNK_SIZE):
                             chunk_ids = all_ids[i:i + CHUNK_SIZE]
-                            
                             for output in execute_request(service.users().messages().batchModify(
                                 userId='me', body={'ids': chunk_ids, 'addLabelIds': ['TRASH']}
                             )):
                                 if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
                             
                             total_trashed += len(chunk_ids)
-                            # Feedback for every chunk
                             yield json.dumps({"msg": f"    ...trashed {total_trashed} so far..."}) + "\n"
-                            time.sleep(0.2) # Breath between chunks
                         
                         yield json.dumps({"msg": f"  - SUCCESS: Trashed {total_trashed} emails total."}) + "\n"
                     else:
@@ -227,7 +233,7 @@ def apply_actions():
                             label_id = created['id']
                             yield json.dumps({"msg": "  - Label created successfully."}) + "\n"
                         except HttpError:
-                            yield json.dumps({"msg": f"  - Label '{label_name}' likely exists. Fetching ID..."}) + "\n"
+                            yield json.dumps({"msg": f"  - Label likely exists. Fetching ID..."}) + "\n"
                             lbls = []
                             for output in execute_request(service.users().labels().list(userId='me')):
                                 if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
@@ -263,9 +269,8 @@ def apply_actions():
                         if msgs:
                             all_ids = [m['id'] for m in msgs]
                             total_moved = 0
+                            CHUNK_SIZE = 25
                             
-                            # --- CHUNKING LOGIC ---
-                            CHUNK_SIZE = 50
                             for i in range(0, len(all_ids), CHUNK_SIZE):
                                 chunk_ids = all_ids[i:i + CHUNK_SIZE]
                                 batch_body = {'ids': chunk_ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}
@@ -275,7 +280,6 @@ def apply_actions():
                                 
                                 total_moved += len(chunk_ids)
                                 yield json.dumps({"msg": f"    ...moved {total_moved} so far..."}) + "\n"
-                                time.sleep(0.2)
 
                             yield json.dumps({"msg": f"  - SUCCESS: Moved {total_moved} emails total."}) + "\n"
                         else:

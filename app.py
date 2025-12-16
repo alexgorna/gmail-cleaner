@@ -10,11 +10,13 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+# --- PRODUCTION SETUP ---
 if os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'):
     with open('client_secret.json', 'w') as f:
         f.write(os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'))
 
 app = Flask(__name__)
+# Fix for Railway HTTPS handling
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_key_for_testing_only')
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
@@ -129,7 +131,12 @@ def get_labels():
     creds = get_creds()
     service = build('gmail', 'v1', credentials=creds)
     results = service.users().labels().list(userId='me').execute()
-    return jsonify(results.get('labels', []))
+    labels = results.get('labels', [])
+    
+    # Sort labels alphabetically
+    labels.sort(key=lambda x: x['name'].lower())
+    
+    return jsonify(labels)
 
 @app.route('/api/apply_actions', methods=['POST'])
 def apply_actions():
@@ -165,14 +172,17 @@ def apply_actions():
                 label_id = item['labelId']
 
             if label_id:
+                # 1. Create Filter (Skip Inbox ONLY)
+                # Removed 'UNREAD' from removeLabelIds so it stays unread
                 filter_body = {
                     'criteria': {'from': email},
-                    'action': {'addLabelIds': [label_id], 'removeLabelIds': ['INBOX', 'UNREAD']}
+                    'action': {'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']} 
                 }
                 try:
                     service.users().settings().filters().create(userId='me', body=filter_body).execute()
                 except Exception: pass
 
+                # 2. Apply to existing messages
                 msgs = service.users().messages().list(userId='me', q=f"from:{email}").execute().get('messages', [])
                 if msgs:
                     ids = [m['id'] for m in msgs]

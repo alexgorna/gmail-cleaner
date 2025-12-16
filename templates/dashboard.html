@@ -136,6 +136,15 @@
     function renderTable() {
         const tbody = document.getElementById('email-table-body');
         tbody.innerHTML = '';
+
+        // OPTIMIZATION: Build options string once
+        const labelOptionsHTML = existingLabels
+            .filter(l => l.type === 'user')
+            .map(l => `<option value="label:${l.id}">${l.name}</option>`)
+            .join('');
+
+        const fragment = document.createDocumentFragment();
+
         scannedData.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
@@ -147,13 +156,14 @@
                         <option value="delete">Delete</option>
                         <optgroup label="Send to Folder">
                             <option value="new_label">+ Create New Label</option>
-                            ${existingLabels.filter(l => l.type === 'user').map(l => `<option value="label:${l.id}">${l.name}</option>`).join('')}
+                            ${labelOptionsHTML}
                         </optgroup>
                     </select>
                 </td>
             `;
-            tbody.appendChild(tr);
+            fragment.appendChild(tr);
         });
+        tbody.appendChild(fragment);
     }
 
     function handleActionChange(selectElem) {

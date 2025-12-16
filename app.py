@@ -148,12 +148,16 @@ def apply_actions():
 
             try:
                 if action_type == 'delete':
-                    yield json.dumps({"msg": "  - Searching for emails to delete..."}) + "\n"
+                    yield json.dumps({"msg": "  - Moving emails to Trash..."}) + "\n"
                     msgs = service.users().messages().list(userId='me', q=f"from:{email}").execute().get('messages', [])
                     if msgs:
                         ids = [m['id'] for m in msgs]
-                        service.users().messages().batchDelete(userId='me', body={'ids': ids}).execute()
-                        yield json.dumps({"msg": f"  - SUCCESS: Deleted {len(ids)} emails."}) + "\n"
+                        # FIX: Using 'TRASH' label instead of batchDelete to avoid 403 errors
+                        service.users().messages().batchModify(
+                            userId='me', 
+                            body={'ids': ids, 'addLabelIds': ['TRASH']}
+                        ).execute()
+                        yield json.dumps({"msg": f"  - SUCCESS: Trashed {len(ids)} emails."}) + "\n"
                     else:
                         yield json.dumps({"msg": "  - No emails found to delete."}) + "\n"
 
@@ -203,7 +207,6 @@ def apply_actions():
                             yield json.dumps({"msg": "  - No existing emails to move."}) + "\n"
 
             except Exception as e:
-                # ERROR CAPTURE: This sends the error to frontend
                 yield json.dumps({"msg": f"  - ERROR processing {email}: {str(e)}"}) + "\n"
         
         yield json.dumps({"msg": "ALL DONE. Reloading..."}) + "\n"

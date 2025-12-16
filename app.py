@@ -10,7 +10,6 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# --- PRODUCTION SETUP ---
 if os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'):
     with open('client_secret.json', 'w') as f:
         f.write(os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'))
@@ -57,7 +56,6 @@ def callback():
     }
     return redirect(url_for('index'))
 
-# --- NEW STREAMING ENDPOINT ---
 @app.route('/api/scan_stream')
 def scan_stream():
     creds = get_creds()
@@ -67,18 +65,15 @@ def scan_stream():
     def generate():
         service = build('gmail', 'v1', credentials=creds)
         
-        # 1. Get ALL Message IDs (Pagination)
+        # 1. Get ALL Message IDs
         messages = []
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
-        
-        # Initial yield to show we started
         yield f"data: {json.dumps({'status': 'init', 'message': 'Fetching message list...'})}\n\n"
 
         while request is not None:
             response = request.execute()
             messages.extend(response.get('messages', []))
             request = service.users().messages().list_next(request, response)
-            # Update user on how many IDs we found so far
             yield f"data: {json.dumps({'status': 'counting', 'count': len(messages)})}\n\n"
         
         total_messages = len(messages)
@@ -110,7 +105,6 @@ def scan_stream():
             except Exception as e:
                 print(f"Batch error: {e}")
 
-            # Yield Progress
             processed_count = min(i + batch_size, total_messages)
             progress_data = {
                 'status': 'progress',
@@ -184,9 +178,7 @@ def apply_actions():
                     ids = [m['id'] for m in msgs]
                     batch_body = {'ids': ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}
                     service.users().messages().batchModify(userId='me', body=batch_body).execute()
-        
         processed_count += 1
-
     return jsonify({"status": "success", "processed": processed_count})
 
 if __name__ == '__main__':

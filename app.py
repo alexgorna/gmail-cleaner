@@ -139,23 +139,32 @@ def apply_actions():
     def generate_updates():
         service = build('gmail', 'v1', credentials=creds)
         
-        def execute_with_retry(request_obj):
+        # --- NEW: Generator-based Retry Logic ---
+        # This yields log messages (Strings) OR the final Result (Object)
+        def execute_request(request_obj):
             retries = 0
             max_retries = 5
             while retries < max_retries:
                 try:
-                    return request_obj.execute()
+                    # Success: Yield result wrapped in dict to distinguish from log
+                    yield {'result': request_obj.execute()}
+                    return
                 except HttpError as e:
+                    # Rate Limit Checks
                     if e.resp.status in [429, 500, 502, 503, 504] or (e.resp.status == 403 and "usageLimits" in str(e)):
-                        sleep_time = (2 ** retries) + random.random()
-                        time.sleep(sleep_time)
+                        wait_time = (2 ** retries) + random.random()
+                        # Yield LOG message to frontend
+                        yield {'log': f"  - Google busy (HTTP {e.resp.status}). Retrying in {int(wait_time)}s..."}
+                        time.sleep(wait_time)
                         retries += 1
                         continue
                     raise e
                 except Exception:
-                    time.sleep(2 ** retries)
+                    wait_time = 2 ** retries
+                    yield {'log': f"  - Connection unstable. Retrying in {wait_time}s..."}
+                    time.sleep(wait_time)
                     retries += 1
-            raise Exception("Max retries exceeded. Connection unstable.")
+            raise Exception("Max retries exceeded.")
 
         yield json.dumps({"msg": "Starting to process actions..."}) + "\n"
 
@@ -169,19 +178,21 @@ def apply_actions():
             try:
                 if action_type == 'delete':
                     yield json.dumps({"msg": "  - Moving emails to Trash..."}) + "\n"
-                    msgs_response = execute_with_retry(
-                        service.users().messages().list(userId='me', q=f"from:{email}")
-                    )
-                    msgs = msgs_response.get('messages', [])
                     
+                    # 1. Search (With Logging Retry)
+                    msgs = []
+                    for output in execute_request(service.users().messages().list(userId='me', q=f"from:{email}")):
+                        if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
+                        elif 'result' in output: msgs = output['result'].get('messages', [])
+
                     if msgs:
                         ids = [m['id'] for m in msgs]
-                        execute_with_retry(
-                            service.users().messages().batchModify(
-                                userId='me', 
-                                body={'ids': ids, 'addLabelIds': ['TRASH']}
-                            )
-                        )
+                        # 2. Trash (With Logging Retry)
+                        for output in execute_request(service.users().messages().batchModify(
+                            userId='me', body={'ids': ids, 'addLabelIds': ['TRASH']}
+                        )):
+                            if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
+                        
                         yield json.dumps({"msg": f"  - SUCCESS: Trashed {len(ids)} emails."}) + "\n"
                     else:
                         yield json.dumps({"msg": "  - No emails found to delete."}) + "\n"
@@ -195,21 +206,29 @@ def apply_actions():
                         
                         yield json.dumps({"msg": f"  - Creating Label: '{label_name}'..."}) + "\n"
                         try:
-                            created = execute_with_retry(
-                                service.users().labels().create(userId='me', body={'name': label_name})
-                            )
+                            # 3. Create Label (With Logging Retry)
+                            created = None
+                            for output in execute_request(service.users().labels().create(userId='me', body={'name': label_name})):
+                                if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
+                                elif 'result' in output: created = output['result']
+                            
                             label_id = created['id']
                             yield json.dumps({"msg": "  - Label created successfully."}) + "\n"
                         except HttpError:
                             yield json.dumps({"msg": f"  - Label '{label_name}' likely exists. Fetching ID..."}) + "\n"
-                            lbls = execute_with_retry(service.users().labels().list(userId='me'))
-                            existing = next((l for l in lbls.get('labels', []) if l['name'].lower() == label_name.lower()), None)
+                            
+                            # 4. Fetch Labels (With Logging Retry)
+                            lbls = []
+                            for output in execute_request(service.users().labels().list(userId='me')):
+                                if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
+                                elif 'result' in output: lbls = output['result'].get('labels', [])
+                            
+                            existing = next((l for l in lbls if l['name'].lower() == label_name.lower()), None)
                             if existing: label_id = existing['id']
                     else:
                         label_id = item['labelId']
-                        # LOGGING FIX FOR EXISTING LABELS
                         if 'labelName' in item:
-                            yield json.dumps({"msg": f"  - Applying Label: '{item['labelName']}'..."}) + "\n"
+                             yield json.dumps({"msg": f"  - Applying Label: '{item['labelName']}'..."}) + "\n"
 
                     if label_id:
                         yield json.dumps({"msg": "  - Creating Filter (Skip Inbox)..."}) + "\n"
@@ -218,25 +237,30 @@ def apply_actions():
                             'action': {'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']} 
                         }
                         try:
-                            execute_with_retry(
-                                service.users().settings().filters().create(userId='me', body=filter_body)
-                            )
+                            # 5. Create Filter (With Logging Retry)
+                            for output in execute_request(service.users().settings().filters().create(userId='me', body=filter_body)):
+                                if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
+                            
                             yield json.dumps({"msg": "  - Filter created."}) + "\n"
                         except Exception as e: 
                             yield json.dumps({"msg": f"  - Filter Warning: {str(e)}"}) + "\n"
 
                         yield json.dumps({"msg": "  - Moving existing emails..."}) + "\n"
-                        msgs_response = execute_with_retry(
-                            service.users().messages().list(userId='me', q=f"from:{email}")
-                        )
-                        msgs = msgs_response.get('messages', [])
                         
+                        # 6. Search Existing (With Logging Retry)
+                        msgs = []
+                        for output in execute_request(service.users().messages().list(userId='me', q=f"from:{email}")):
+                             if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
+                             elif 'result' in output: msgs = output['result'].get('messages', [])
+
                         if msgs:
                             ids = [m['id'] for m in msgs]
                             batch_body = {'ids': ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}
-                            execute_with_retry(
-                                service.users().messages().batchModify(userId='me', body=batch_body)
-                            )
+                            
+                            # 7. Move Existing (With Logging Retry)
+                            for output in execute_request(service.users().messages().batchModify(userId='me', body=batch_body)):
+                                if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
+                                
                             yield json.dumps({"msg": f"  - SUCCESS: Moved {len(ids)} emails."}) + "\n"
                         else:
                             yield json.dumps({"msg": "  - No existing emails to move."}) + "\n"

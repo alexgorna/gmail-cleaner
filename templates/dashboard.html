@@ -37,6 +37,10 @@
             </thead>
             <tbody id="email-table-body"></tbody>
         </table>
+        
+        <div id="load-more-container" class="p-2 text-center" style="display:none;">
+            <button class="btn btn-outline-secondary btn-sm" onclick="loadMoreRows()">Load More rows...</button>
+        </div>
     </div>
 
     <div class="mt-4 d-grid gap-2">
@@ -75,14 +79,23 @@
     let existingLabels = [];
     let currentEditingRowEmail = null;
     let pendingActions = {};
+    
+    // PAGINATION VARIABLES
+    let currentRenderIndex = 0;
+    const PAGE_SIZE = 50;
+    let labelOptionsHTML = ""; // Store the dropdown HTML globally
 
     window.onload = async function() {
-        // 1. Fetch Labels
         const labelRes = await fetch('/api/get_labels');
         existingLabels = await labelRes.json();
-        populateParentLabelSelect();
+        
+        // Build options ONCE
+        labelOptionsHTML = existingLabels
+            .filter(l => l.type === 'user')
+            .map(l => `<option value="label:${l.id}">${l.name}</option>`)
+            .join('');
 
-        // 2. Start Streaming Scan
+        populateParentLabelSelect();
         startScanStream();
     };
 
@@ -116,36 +129,24 @@
                 setTimeout(() => document.getElementById('progress-container').style.display = 'none', 1000);
                 
                 scannedData = data.data;
-                renderTable();
+                // Render FIRST batch
+                currentRenderIndex = 0;
+                document.getElementById('email-table-body').innerHTML = ''; // Clear existing
+                loadMoreRows(); 
+                
                 evtSource.close();
             }
         };
 
-        evtSource.onerror = function() {
-            evtSource.close();
-        };
+        evtSource.onerror = function() { evtSource.close(); };
     }
 
-    function showError(msg) {
-        const alertBox = document.getElementById('error-alert');
-        alertBox.innerText = msg;
-        alertBox.style.display = 'block';
-        document.getElementById('progress-container').style.display = 'none';
-    }
-
-    function renderTable() {
+    function loadMoreRows() {
         const tbody = document.getElementById('email-table-body');
-        tbody.innerHTML = '';
-
-        // OPTIMIZATION: Build options string once
-        const labelOptionsHTML = existingLabels
-            .filter(l => l.type === 'user')
-            .map(l => `<option value="label:${l.id}">${l.name}</option>`)
-            .join('');
-
+        const nextBatch = scannedData.slice(currentRenderIndex, currentRenderIndex + PAGE_SIZE);
         const fragment = document.createDocumentFragment();
 
-        scannedData.forEach(row => {
+        nextBatch.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${row.email}</td>
@@ -164,8 +165,26 @@
             fragment.appendChild(tr);
         });
         tbody.appendChild(fragment);
+
+        currentRenderIndex += PAGE_SIZE;
+
+        // Show/Hide "Load More" button
+        const btnContainer = document.getElementById('load-more-container');
+        if (currentRenderIndex < scannedData.length) {
+            btnContainer.style.display = 'block';
+        } else {
+            btnContainer.style.display = 'none';
+        }
     }
 
+    function showError(msg) {
+        const alertBox = document.getElementById('error-alert');
+        alertBox.innerText = msg;
+        alertBox.style.display = 'block';
+        document.getElementById('progress-container').style.display = 'none';
+    }
+
+    // Helper Functions
     function handleActionChange(selectElem) {
         const val = selectElem.value;
         const email = selectElem.dataset.email;

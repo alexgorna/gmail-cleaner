@@ -10,13 +10,11 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# --- PRODUCTION SETUP ---
 if os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'):
     with open('client_secret.json', 'w') as f:
         f.write(os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'))
 
 app = Flask(__name__)
-# Fix for Railway HTTPS handling
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_key_for_testing_only')
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
@@ -67,7 +65,6 @@ def scan_stream():
     def generate():
         service = build('gmail', 'v1', credentials=creds)
         
-        # 1. Get ALL Message IDs
         messages = []
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
         yield f"data: {json.dumps({'status': 'init', 'message': 'Fetching message list...'})}\n\n"
@@ -83,7 +80,6 @@ def scan_stream():
             yield f"data: {json.dumps({'status': 'complete', 'data': []})}\n\n"
             return
 
-        # 2. Process in Batches
         senders = []
         batch_size = 50
         
@@ -116,7 +112,6 @@ def scan_stream():
             }
             yield f"data: {json.dumps(progress_data)}\n\n"
 
-        # 3. Final Ranking
         df = pd.DataFrame(senders, columns=['email'])
         counts = df['email'].value_counts().reset_index()
         counts.columns = ['email', 'count']
@@ -132,10 +127,7 @@ def get_labels():
     service = build('gmail', 'v1', credentials=creds)
     results = service.users().labels().list(userId='me').execute()
     labels = results.get('labels', [])
-    
-    # Sort labels alphabetically
     labels.sort(key=lambda x: x['name'].lower())
-    
     return jsonify(labels)
 
 @app.route('/api/apply_actions', methods=['POST'])
@@ -172,8 +164,8 @@ def apply_actions():
                 label_id = item['labelId']
 
             if label_id:
-                # 1. Create Filter (Skip Inbox ONLY)
-                # Removed 'UNREAD' from removeLabelIds so it stays unread
+                # 1. Create Filter
+                # Note: We ONLY remove 'INBOX'. We do NOT remove 'UNREAD'.
                 filter_body = {
                     'criteria': {'from': email},
                     'action': {'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']} 

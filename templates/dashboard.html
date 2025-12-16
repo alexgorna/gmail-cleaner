@@ -5,8 +5,22 @@
     <title>Inbox Cleaner</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        .scrollable-table { max-height: 600px; overflow-y: auto; }
+        .scrollable-table { max-height: 500px; overflow-y: auto; }
         .sticky-header th { position: sticky; top: 0; background-color: white; z-index: 1; }
+        
+        /* New Activity Log Styles */
+        #activity-log {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+            height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 0.9rem;
+            padding: 10px;
+            display: none; /* Hidden until needed */
+        }
+        .log-line { margin-bottom: 2px; }
     </style>
 </head>
 <body class="bg-light p-5">
@@ -43,8 +57,13 @@
         </div>
     </div>
 
+    <div id="activity-log-container" class="mt-4" style="display:none;">
+        <h5>Activity Log</h5>
+        <div id="activity-log"></div>
+    </div>
+
     <div class="mt-4 d-grid gap-2">
-        <button class="btn btn-primary btn-lg" onclick="applyChanges()">APPLY CHANGES</button>
+        <button id="apply-btn" class="btn btn-primary btn-lg" onclick="applyChanges()">APPLY CHANGES</button>
     </div>
 </div>
 
@@ -79,17 +98,14 @@
     let existingLabels = [];
     let currentEditingRowEmail = null;
     let pendingActions = {};
-    
-    // PAGINATION VARIABLES
     let currentRenderIndex = 0;
     const PAGE_SIZE = 50;
-    let labelOptionsHTML = ""; // Store the dropdown HTML globally
+    let labelOptionsHTML = "";
 
     window.onload = async function() {
         const labelRes = await fetch('/api/get_labels');
         existingLabels = await labelRes.json();
         
-        // Build options ONCE
         labelOptionsHTML = existingLabels
             .filter(l => l.type === 'user')
             .map(l => `<option value="label:${l.id}">${l.name}</option>`)
@@ -129,11 +145,9 @@
                 setTimeout(() => document.getElementById('progress-container').style.display = 'none', 1000);
                 
                 scannedData = data.data;
-                // Render FIRST batch
                 currentRenderIndex = 0;
-                document.getElementById('email-table-body').innerHTML = ''; // Clear existing
+                document.getElementById('email-table-body').innerHTML = '';
                 loadMoreRows(); 
-                
                 evtSource.close();
             }
         };
@@ -168,7 +182,6 @@
 
         currentRenderIndex += PAGE_SIZE;
 
-        // Show/Hide "Load More" button
         const btnContainer = document.getElementById('load-more-container');
         if (currentRenderIndex < scannedData.length) {
             btnContainer.style.display = 'block';
@@ -225,6 +238,8 @@
         select.add(opt, select[1]);
         bootstrap.Modal.getInstance(document.getElementById('labelModal')).hide();
     }
+
+    // --- NEW: STREAMING ACTIONS ---
     async function applyChanges() {
         const selects = document.querySelectorAll('.action-select');
         const actions = [];
@@ -235,16 +250,56 @@
             else if (s.value === 'delete') actions.push({ email: email, action: 'delete' });
             else if (s.value.startsWith('label:')) actions.push({ email: email, action: 'label', labelId: s.value.split(':')[1] });
         });
+        
         if(actions.length === 0) return alert("No actions selected");
-        
-        document.getElementById('progress-container').style.display = 'block';
-        document.getElementById('progress-text').innerText = "Applying changes...";
-        
-        await fetch('/api/apply_actions', {
-            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(actions)
-        });
-        alert("Done!");
-        window.location.reload();
+
+        // 1. Setup UI for Logs
+        document.getElementById('apply-btn').disabled = true;
+        document.getElementById('apply-btn').innerText = "Processing...";
+        const logDiv = document.getElementById('activity-log');
+        document.getElementById('activity-log-container').style.display = 'block';
+        logDiv.style.display = 'block';
+        logDiv.innerHTML = '<div class="log-line">Starting...</div>';
+
+        // 2. Fetch using readable stream
+        try {
+            const response = await fetch('/api/apply_actions', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(actions)
+            });
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n');
+                
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    try {
+                        const jsonLog = JSON.parse(line);
+                        
+                        if (jsonLog.status === 'complete') {
+                            setTimeout(() => window.location.reload(), 2000);
+                        } else if (jsonLog.msg) {
+                            const p = document.createElement('div');
+                            p.className = 'log-line';
+                            p.innerText = jsonLog.msg;
+                            logDiv.appendChild(p);
+                            logDiv.scrollTop = logDiv.scrollHeight; // Auto-scroll
+                        }
+                    } catch(e) { console.log("Log parsing error:", e); }
+                }
+            }
+        } catch (err) {
+            logDiv.innerHTML += `<div class="log-line text-danger">Connection Error: ${err.message}</div>`;
+            document.getElementById('apply-btn').disabled = false;
+        }
     }
 </script>
 </body>

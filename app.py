@@ -133,55 +133,82 @@ def get_labels():
 @app.route('/api/apply_actions', methods=['POST'])
 def apply_actions():
     creds = get_creds()
-    service = build('gmail', 'v1', credentials=creds)
     actions = request.json 
-    processed_count = 0
 
-    for item in actions:
-        email = item['email']
-        action_type = item['action']
+    def generate_updates():
+        service = build('gmail', 'v1', credentials=creds)
         
-        if action_type == 'delete':
-            msgs = service.users().messages().list(userId='me', q=f"from:{email}").execute().get('messages', [])
-            if msgs:
-                ids = [m['id'] for m in msgs]
-                service.users().messages().batchDelete(userId='me', body={'ids': ids}).execute()
+        yield json.dumps({"msg": "Starting to process actions..."}) + "\n"
 
-        elif action_type == 'label':
-            label_id = None
-            if item.get('isNew'):
-                label_body = {'name': item['labelName']}
-                if item.get('parentId') and 'parentName' in item:
-                        label_body['name'] = f"{item['parentName']}/{item['labelName']}"
-                try:
-                    created = service.users().labels().create(userId='me', body=label_body).execute()
-                    label_id = created['id']
-                except HttpError:
-                    lbls = service.users().labels().list(userId='me').execute().get('labels', [])
-                    existing = next((l for l in lbls if l['name'].lower() == label_body['name'].lower()), None)
-                    if existing: label_id = existing['id']
-            else:
-                label_id = item['labelId']
+        for item in actions:
+            email = item['email']
+            action_type = item['action']
+            
+            yield json.dumps({"msg": f"Processing: {email}..."}) + "\n"
 
-            if label_id:
-                # 1. Create Filter
-                # Note: We ONLY remove 'INBOX'. We do NOT remove 'UNREAD'.
-                filter_body = {
-                    'criteria': {'from': email},
-                    'action': {'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']} 
-                }
-                try:
-                    service.users().settings().filters().create(userId='me', body=filter_body).execute()
-                except Exception: pass
+            try:
+                if action_type == 'delete':
+                    yield json.dumps({"msg": "  - Searching for emails to delete..."}) + "\n"
+                    msgs = service.users().messages().list(userId='me', q=f"from:{email}").execute().get('messages', [])
+                    if msgs:
+                        ids = [m['id'] for m in msgs]
+                        service.users().messages().batchDelete(userId='me', body={'ids': ids}).execute()
+                        yield json.dumps({"msg": f"  - SUCCESS: Deleted {len(ids)} emails."}) + "\n"
+                    else:
+                        yield json.dumps({"msg": "  - No emails found to delete."}) + "\n"
 
-                # 2. Apply to existing messages
-                msgs = service.users().messages().list(userId='me', q=f"from:{email}").execute().get('messages', [])
-                if msgs:
-                    ids = [m['id'] for m in msgs]
-                    batch_body = {'ids': ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}
-                    service.users().messages().batchModify(userId='me', body=batch_body).execute()
-        processed_count += 1
-    return jsonify({"status": "success", "processed": processed_count})
+                elif action_type == 'label':
+                    label_id = None
+                    # Label Creation Logic
+                    if item.get('isNew'):
+                        label_name = item['labelName']
+                        if item.get('parentId') and 'parentName' in item:
+                             label_name = f"{item['parentName']}/{item['labelName']}"
+                        
+                        yield json.dumps({"msg": f"  - Creating Label: '{label_name}'..."}) + "\n"
+                        try:
+                            created = service.users().labels().create(userId='me', body={'name': label_name}).execute()
+                            label_id = created['id']
+                            yield json.dumps({"msg": "  - Label created successfully."}) + "\n"
+                        except HttpError:
+                            yield json.dumps({"msg": "  - Label likely exists. Fetching ID..."}) + "\n"
+                            lbls = service.users().labels().list(userId='me').execute().get('labels', [])
+                            existing = next((l for l in lbls if l['name'].lower() == label_name.lower()), None)
+                            if existing: label_id = existing['id']
+                    else:
+                        label_id = item['labelId']
+
+                    if label_id:
+                        # Filter Logic
+                        yield json.dumps({"msg": "  - Creating Filter (Skip Inbox)..."}) + "\n"
+                        filter_body = {
+                            'criteria': {'from': email},
+                            'action': {'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']} 
+                        }
+                        try:
+                            service.users().settings().filters().create(userId='me', body=filter_body).execute()
+                            yield json.dumps({"msg": "  - Filter created."}) + "\n"
+                        except Exception as e: 
+                            yield json.dumps({"msg": f"  - Filter Warning: {str(e)}"}) + "\n"
+
+                        # Retroactive Apply Logic
+                        yield json.dumps({"msg": "  - Moving existing emails..."}) + "\n"
+                        msgs = service.users().messages().list(userId='me', q=f"from:{email}").execute().get('messages', [])
+                        if msgs:
+                            ids = [m['id'] for m in msgs]
+                            batch_body = {'ids': ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}
+                            service.users().messages().batchModify(userId='me', body=batch_body).execute()
+                            yield json.dumps({"msg": f"  - SUCCESS: Moved {len(ids)} emails."}) + "\n"
+                        else:
+                            yield json.dumps({"msg": "  - No existing emails to move."}) + "\n"
+
+            except Exception as e:
+                yield json.dumps({"msg": f"  - ERROR processing {email}: {str(e)}"}) + "\n"
+        
+        yield json.dumps({"msg": "ALL DONE. Reloading..."}) + "\n"
+        yield json.dumps({"status": "complete"}) + "\n"
+
+    return Response(stream_with_context(generate_updates()), mimetype='application/json')
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

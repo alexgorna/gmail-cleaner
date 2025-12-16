@@ -145,6 +145,9 @@ def apply_actions():
             action_type = item['action']
             
             yield json.dumps({"msg": f"Processing: {email}..."}) + "\n"
+            
+            # --- FIX: Sleep to avoid Rate Limits ---
+            time.sleep(1.0) 
 
             try:
                 if action_type == 'delete':
@@ -152,7 +155,6 @@ def apply_actions():
                     msgs = service.users().messages().list(userId='me', q=f"from:{email}").execute().get('messages', [])
                     if msgs:
                         ids = [m['id'] for m in msgs]
-                        # FIX: Using 'TRASH' label instead of batchDelete to avoid 403 errors
                         service.users().messages().batchModify(
                             userId='me', 
                             body={'ids': ids, 'addLabelIds': ['TRASH']}

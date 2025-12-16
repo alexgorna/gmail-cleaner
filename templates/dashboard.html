@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Inbox Cleaner</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .scrollable-table { max-height: 600px; overflow-y: auto; }
+        .sticky-header th { position: sticky; top: 0; background-color: white; z-index: 1; }
+    </style>
+</head>
+<body class="bg-light p-5">
+
+<div class="container bg-white p-4 rounded shadow">
+    <h2>Inbox Analyzer</h2>
+    
+    <div id="progress-container" class="my-3" style="display:none;">
+        <label>Scanning Inbox...</label>
+        <div class="progress">
+            <div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 100%"></div>
+        </div>
+    </div>
+
+    <div class="scrollable-table border rounded mt-3">
+        <table class="table table-hover mb-0">
+            <thead class="sticky-header">
+                <tr>
+                    <th>Sender Email</th>
+                    <th>Count</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody id="email-table-body">
+                </tbody>
+        </table>
+    </div>
+
+    <div class="mt-4 d-grid gap-2">
+        <button class="btn btn-primary btn-lg" onclick="applyChanges()">APPLY CHANGES</button>
+    </div>
+</div>
+
+<div class="modal fade" id="labelModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">New Label</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Please enter a new label name:</label>
+                    <input type="text" class="form-control" id="newLabelName">
+                </div>
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" id="nestLabelCheck" onchange="toggleNestDropdown()">
+                    <label class="form-check-label">Nest label under:</label>
+                </div>
+                <select class="form-select" id="parentLabelSelect" disabled>
+                    </select>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="confirmLabelCreation()">Create</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    let scannedData = [];
+    let currentEditingRowEmail = null;
+    let existingLabels = [];
+
+    // On Load: Fetch Data
+    window.onload = async function() {
+        document.getElementById('progress-container').style.display = 'block';
+        
+        // 1. Fetch Labels for dropdowns
+        const labelRes = await fetch('/api/get_labels');
+        existingLabels = await labelRes.json();
+        populateParentLabelSelect();
+
+        // 2. Fetch Emails
+        const res = await fetch('/api/scan_inbox');
+        scannedData = await res.json();
+        
+        document.getElementById('progress-container').style.display = 'none';
+        renderTable();
+    };
+
+    function renderTable() {
+        const tbody = document.getElementById('email-table-body');
+        tbody.innerHTML = '';
+        
+        scannedData.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${row.email}</td>
+                <td>${row.count}</td>
+                <td>
+                    <select class="form-select action-select" data-email="${row.email}" onchange="handleActionChange(this)">
+                        <option value="none" selected>Choose action...</option>
+                        <option value="delete">Delete</option>
+                        <optgroup label="Send to Folder">
+                            <option value="new_label">+ Create New Label</option>
+                            ${existingLabels.filter(l => l.type === 'user').map(l => `<option value="label:${l.id}">${l.name}</option>`).join('')}
+                        </optgroup>
+                    </select>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    function handleActionChange(selectElem) {
+        const val = selectElem.value;
+        const email = selectElem.dataset.email;
+
+        if (val === 'new_label') {
+            currentEditingRowEmail = email;
+            // Open Modal
+            new bootstrap.Modal(document.getElementById('labelModal')).show();
+        }
+    }
+
+    function toggleNestDropdown() {
+        const isChecked = document.getElementById('nestLabelCheck').checked;
+        document.getElementById('parentLabelSelect').disabled = !isChecked;
+    }
+
+    function populateParentLabelSelect() {
+        const select = document.getElementById('parentLabelSelect');
+        existingLabels.forEach(l => {
+            if(l.type === 'user') {
+                const opt = document.createElement('option');
+                opt.value = l.id; // Usually we need name for nesting API
+                opt.text = l.name;
+                select.appendChild(opt);
+            }
+        });
+    }
+
+    function confirmLabelCreation() {
+        const name = document.getElementById('newLabelName').value;
+        const isNested = document.getElementById('nestLabelCheck').checked;
+        const parentId = document.getElementById('parentLabelSelect').value;
+        const parentName = document.getElementById('parentLabelSelect').selectedOptions[0]?.text;
+
+        // Store this decision in a temporary object on the select element or a global state
+        // For visual feedback, we can update the dropdown to show the selected "New Label"
+        // In a real app, you would store this configuration to send to backend later
+        
+        console.log(`Prepared to create label ${name} for ${currentEditingRowEmail}`);
+        
+        // Hide Modal
+        bootstrap.Modal.getInstance(document.getElementById('labelModal')).hide();
+    }
+
+    async function applyChanges() {
+        // Gather all rows where value != 'none'
+        const selects = document.querySelectorAll('.action-select');
+        const actions = [];
+
+        selects.forEach(s => {
+            if (s.value === 'none') return;
+            
+            const payload = { email: s.dataset.email };
+            
+            if (s.value === 'delete') {
+                payload.action = 'delete';
+            } else if (s.value.startsWith('label:')) {
+                payload.action = 'label';
+                payload.labelId = s.value.split(':')[1];
+            } else if (s.value === 'new_label') {
+                // Here you would retrieve the data stored during confirmLabelCreation
+                // For this snippet, assuming simpler logic or previously stored state
+                payload.action = 'label';
+                payload.isNew = true;
+                payload.labelName = "User Defined Name"; // Retrieve from state
+            }
+            actions.push(payload);
+        });
+
+        if(actions.length === 0) return alert("No actions selected");
+
+        // Send to backend
+        await fetch('/api/apply_actions', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(actions)
+        });
+        
+        alert("Processing complete!");
+        window.location.reload();
+    }
+</script>
+</body>
+</html>

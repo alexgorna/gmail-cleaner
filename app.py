@@ -203,6 +203,7 @@ def apply_actions():
                             yield json.dumps({"msg": "  - No existing emails to move."}) + "\n"
 
             except Exception as e:
+                # ERROR CAPTURE: This sends the error to frontend
                 yield json.dumps({"msg": f"  - ERROR processing {email}: {str(e)}"}) + "\n"
         
         yield json.dumps({"msg": "ALL DONE. Reloading..."}) + "\n"

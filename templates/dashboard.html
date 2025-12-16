@@ -21,6 +21,7 @@
             display: none; /* Hidden until needed */
         }
         .log-line { margin-bottom: 2px; }
+        .log-error { color: #dc3545; font-weight: bold; } /* Red style for errors */
     </style>
 </head>
 <body class="bg-light p-5">
@@ -239,7 +240,6 @@
         bootstrap.Modal.getInstance(document.getElementById('labelModal')).hide();
     }
 
-    // --- NEW: STREAMING ACTIONS ---
     async function applyChanges() {
         const selects = document.querySelectorAll('.action-select');
         const actions = [];
@@ -253,7 +253,6 @@
         
         if(actions.length === 0) return alert("No actions selected");
 
-        // 1. Setup UI for Logs
         document.getElementById('apply-btn').disabled = true;
         document.getElementById('apply-btn').innerText = "Processing...";
         const logDiv = document.getElementById('activity-log');
@@ -261,7 +260,6 @@
         logDiv.style.display = 'block';
         logDiv.innerHTML = '<div class="log-line">Starting...</div>';
 
-        // 2. Fetch using readable stream
         try {
             const response = await fetch('/api/apply_actions', {
                 method: 'POST',
@@ -289,15 +287,21 @@
                         } else if (jsonLog.msg) {
                             const p = document.createElement('div');
                             p.className = 'log-line';
+                            
+                            // VISUAL TWEAK: Make Error messages RED
+                            if(jsonLog.msg.includes("ERROR") || jsonLog.msg.includes("Warning")) {
+                                p.className += ' log-error';
+                            }
+                            
                             p.innerText = jsonLog.msg;
                             logDiv.appendChild(p);
-                            logDiv.scrollTop = logDiv.scrollHeight; // Auto-scroll
+                            logDiv.scrollTop = logDiv.scrollHeight; 
                         }
                     } catch(e) { console.log("Log parsing error:", e); }
                 }
             }
         } catch (err) {
-            logDiv.innerHTML += `<div class="log-line text-danger">Connection Error: ${err.message}</div>`;
+            logDiv.innerHTML += `<div class="log-line log-error">Connection Error: ${err.message}</div>`;
             document.getElementById('apply-btn').disabled = false;
         }
     }

@@ -2,6 +2,7 @@ import os
 import json
 import pandas as pd
 import re
+from werkzeug.middleware.proxy_fix import ProxyFix
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
@@ -9,13 +10,16 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # --- PRODUCTION SETUP: Create secret file from Environment Variable ---
-# This allows Railway to inject your secrets safely without putting them on GitHub.
 if os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'):
     print("Detected Environment Variable for Secrets. Creating client_secret.json...")
     with open('client_secret.json', 'w') as f:
         f.write(os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'))
 
 app = Flask(__name__)
+
+# --- FIX FOR RAILWAY HTTPS ERROR ---
+# This tells Flask to trust the HTTPS headers coming from Railway
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 # Use a secure key from Railway, or a default for local testing
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_key_for_testing_only')
@@ -41,12 +45,10 @@ def index():
     creds = get_creds()
     if not creds:
         return render_template('login.html') 
-        # Note: You need a simple login.html template with a "Login with Google" button
     return render_template('dashboard.html')
 
 @app.route('/login')
 def login():
-    # This automatically detects if you are on localhost or Railway
     redirect_uri = url_for('callback', _external=True)
     
     flow = Flow.from_client_secrets_file(
@@ -68,7 +70,6 @@ def callback():
     flow.fetch_token(authorization_response=request.url)
     creds = flow.credentials
     
-    # Store credentials in session
     session['credentials'] = {
         'token': creds.token,
         'refresh_token': creds.refresh_token,
@@ -141,7 +142,6 @@ def apply_actions():
         
         # 1. DELETE ACTION
         if action_type == 'delete':
-            # Find messages
             query = f"from:{email}"
             msgs = service.users().messages().list(userId='me', q=query).execute().get('messages', [])
             if msgs:
@@ -159,9 +159,6 @@ def apply_actions():
                 
                 # If user selected a parent folder to nest under
                 if item.get('parentId'): 
-                    # We need the parent NAME, not ID, for the API (Parent/Child)
-                    # Ideally frontend sends parentName, or we look it up. 
-                    # Assuming frontend sends 'parentName' for simplicity here:
                     if 'parentName' in item:
                         label_body['name'] = f"{item['parentName']}/{label_name}"
 
@@ -182,7 +179,7 @@ def apply_actions():
                     'criteria': {'from': email},
                     'action': {
                         'addLabelIds': [label_id],
-                        'removeLabelIds': ['INBOX', 'UNREAD'] # Mark read and archive
+                        'removeLabelIds': ['INBOX', 'UNREAD'] 
                     }
                 }
                 try:
@@ -207,5 +204,4 @@ def apply_actions():
     return jsonify({"status": "success", "processed": processed_count})
 
 if __name__ == '__main__':
-    # Standard boilerplate for running locally
     app.run(debug=True, port=5000)

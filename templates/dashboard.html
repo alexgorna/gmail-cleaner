@@ -8,7 +8,6 @@
         .scrollable-table { max-height: 500px; overflow-y: auto; }
         .sticky-header th { position: sticky; top: 0; background-color: white; z-index: 1; }
         
-        /* New Activity Log Styles */
         #activity-log {
             background-color: #f8f9fa;
             border: 1px solid #dee2e6;
@@ -18,10 +17,10 @@
             font-family: monospace;
             font-size: 0.9rem;
             padding: 10px;
-            display: none; /* Hidden until needed */
+            display: none;
         }
         .log-line { margin-bottom: 2px; }
-        .log-error { color: #dc3545; font-weight: bold; } /* Red style for errors */
+        .log-error { color: #dc3545; font-weight: bold; }
     </style>
 </head>
 <body class="bg-light p-5">
@@ -124,13 +123,11 @@
 
         evtSource.onmessage = function(event) {
             const data = JSON.parse(event.data);
-
             if (data.error) {
                 showError(data.error);
                 evtSource.close();
                 return;
             }
-
             if (data.status === 'init') {
                 progressText.innerText = data.message;
             } else if (data.status === 'counting') {
@@ -152,7 +149,6 @@
                 evtSource.close();
             }
         };
-
         evtSource.onerror = function() { evtSource.close(); };
     }
 
@@ -180,7 +176,6 @@
             fragment.appendChild(tr);
         });
         tbody.appendChild(fragment);
-
         currentRenderIndex += PAGE_SIZE;
 
         const btnContainer = document.getElementById('load-more-container');
@@ -198,7 +193,6 @@
         document.getElementById('progress-container').style.display = 'none';
     }
 
-    // Helper Functions
     function handleActionChange(selectElem) {
         const val = selectElem.value;
         const email = selectElem.dataset.email;
@@ -246,9 +240,26 @@
         selects.forEach(s => {
             if (s.value === 'none') return;
             const email = s.dataset.email;
-            if (pendingActions[email] && s.value === 'temp_custom') actions.push({ email: email, ...pendingActions[email] });
-            else if (s.value === 'delete') actions.push({ email: email, action: 'delete' });
-            else if (s.value.startsWith('label:')) actions.push({ email: email, action: 'label', labelId: s.value.split(':')[1] });
+            
+            // Check for Pending Action (New Label)
+            if (pendingActions[email] && s.value === 'temp_custom') {
+                actions.push({ email: email, ...pendingActions[email] });
+            } 
+            // Check for Delete
+            else if (s.value === 'delete') {
+                actions.push({ email: email, action: 'delete' });
+            } 
+            // Check for Existing Label
+            else if (s.value.startsWith('label:')) {
+                // FIX: Grab the text (Name) of the label so we can show it in the log
+                const labelName = s.options[s.selectedIndex].text;
+                actions.push({ 
+                    email: email, 
+                    action: 'label', 
+                    labelId: s.value.split(':')[1],
+                    labelName: labelName  // <--- SENDING THE NAME
+                });
+            }
         });
         
         if(actions.length === 0) return alert("No actions selected");
@@ -287,12 +298,9 @@
                         } else if (jsonLog.msg) {
                             const p = document.createElement('div');
                             p.className = 'log-line';
-                            
-                            // VISUAL TWEAK: Make Error messages RED
                             if(jsonLog.msg.includes("ERROR") || jsonLog.msg.includes("Warning")) {
                                 p.className += ' log-error';
                             }
-                            
                             p.innerText = jsonLog.msg;
                             logDiv.appendChild(p);
                             logDiv.scrollTop = logDiv.scrollHeight; 

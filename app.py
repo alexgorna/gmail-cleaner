@@ -139,7 +139,6 @@ def apply_actions():
     def generate_updates():
         service = build('gmail', 'v1', credentials=creds)
         
-        # --- NEW: Robust Retry Function ---
         def execute_with_retry(request_obj):
             retries = 0
             max_retries = 5
@@ -147,22 +146,13 @@ def apply_actions():
                 try:
                     return request_obj.execute()
                 except HttpError as e:
-                    # Retry on Rate Limit (429) or Server Error (5xx)
-                    if e.resp.status in [429, 500, 502, 503, 504]:
-                        sleep_time = (2 ** retries) + random.random()
-                        # We can't yield from here easily, but we'll sleep
-                        time.sleep(sleep_time)
-                        retries += 1
-                        continue
-                    # Retry on specific 403 Rate Limits
-                    if e.resp.status == 403 and "usageLimits" in str(e):
+                    if e.resp.status in [429, 500, 502, 503, 504] or (e.resp.status == 403 and "usageLimits" in str(e)):
                         sleep_time = (2 ** retries) + random.random()
                         time.sleep(sleep_time)
                         retries += 1
                         continue
-                    raise e # Raise other errors (like 400 Filter Exists) immediately
+                    raise e
                 except Exception:
-                    # Retry on network blips
                     time.sleep(2 ** retries)
                     retries += 1
             raise Exception("Max retries exceeded. Connection unstable.")
@@ -174,14 +164,11 @@ def apply_actions():
             action_type = item['action']
             
             yield json.dumps({"msg": f"Processing: {email}..."}) + "\n"
-            
-            # Courtesy sleep to be nice to the API
             time.sleep(0.5)
 
             try:
                 if action_type == 'delete':
                     yield json.dumps({"msg": "  - Moving emails to Trash..."}) + "\n"
-                    # Using Retry Logic
                     msgs_response = execute_with_retry(
                         service.users().messages().list(userId='me', q=f"from:{email}")
                     )
@@ -214,12 +201,15 @@ def apply_actions():
                             label_id = created['id']
                             yield json.dumps({"msg": "  - Label created successfully."}) + "\n"
                         except HttpError:
-                            yield json.dumps({"msg": "  - Label likely exists. Fetching ID..."}) + "\n"
+                            yield json.dumps({"msg": f"  - Label '{label_name}' likely exists. Fetching ID..."}) + "\n"
                             lbls = execute_with_retry(service.users().labels().list(userId='me'))
                             existing = next((l for l in lbls.get('labels', []) if l['name'].lower() == label_name.lower()), None)
                             if existing: label_id = existing['id']
                     else:
                         label_id = item['labelId']
+                        # LOGGING FIX FOR EXISTING LABELS
+                        if 'labelName' in item:
+                            yield json.dumps({"msg": f"  - Applying Label: '{item['labelName']}'..."}) + "\n"
 
                     if label_id:
                         yield json.dumps({"msg": "  - Creating Filter (Skip Inbox)..."}) + "\n"

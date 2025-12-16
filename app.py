@@ -4,12 +4,18 @@ import pandas as pd
 import re
 import time
 import random
+import socket  # <--- NEW IMPORT
 from werkzeug.middleware.proxy_fix import ProxyFix
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response, stream_with_context
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+
+# --- CRITICAL FIX: Set Global Timeout ---
+# This prevents the app from hanging forever if Google stops responding.
+# It will raise a timeout error after 15s, triggering our retry logic.
+socket.setdefaulttimeout(15) 
 
 if os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'):
     with open('client_secret.json', 'w') as f:
@@ -71,10 +77,14 @@ def scan_stream():
         yield f"data: {json.dumps({'status': 'init', 'message': 'Fetching message list...'})}\n\n"
 
         while request is not None:
-            response = request.execute()
-            messages.extend(response.get('messages', []))
-            request = service.users().messages().list_next(request, response)
-            yield f"data: {json.dumps({'status': 'counting', 'count': len(messages)})}\n\n"
+            try:
+                response = request.execute()
+                messages.extend(response.get('messages', []))
+                request = service.users().messages().list_next(request, response)
+                yield f"data: {json.dumps({'status': 'counting', 'count': len(messages)})}\n\n"
+            except Exception:
+                # Basic protection for scanning too
+                break
         
         total_messages = len(messages)
         if total_messages == 0:
@@ -139,29 +149,26 @@ def apply_actions():
     def generate_updates():
         service = build('gmail', 'v1', credentials=creds)
         
-        # --- NEW: Generator-based Retry Logic ---
-        # This yields log messages (Strings) OR the final Result (Object)
         def execute_request(request_obj):
             retries = 0
             max_retries = 5
             while retries < max_retries:
                 try:
-                    # Success: Yield result wrapped in dict to distinguish from log
                     yield {'result': request_obj.execute()}
                     return
                 except HttpError as e:
-                    # Rate Limit Checks
                     if e.resp.status in [429, 500, 502, 503, 504] or (e.resp.status == 403 and "usageLimits" in str(e)):
                         wait_time = (2 ** retries) + random.random()
-                        # Yield LOG message to frontend
                         yield {'log': f"  - Google busy (HTTP {e.resp.status}). Retrying in {int(wait_time)}s..."}
                         time.sleep(wait_time)
                         retries += 1
                         continue
                     raise e
-                except Exception:
+                except Exception as e:
+                    # Catch TIMEOUTS here
                     wait_time = 2 ** retries
-                    yield {'log': f"  - Connection unstable. Retrying in {wait_time}s..."}
+                    error_name = type(e).__name__ # e.g., 'TimeoutError'
+                    yield {'log': f"  - Network Error ({error_name}). Retrying in {wait_time}s..."}
                     time.sleep(wait_time)
                     retries += 1
             raise Exception("Max retries exceeded.")
@@ -179,7 +186,6 @@ def apply_actions():
                 if action_type == 'delete':
                     yield json.dumps({"msg": "  - Moving emails to Trash..."}) + "\n"
                     
-                    # 1. Search (With Logging Retry)
                     msgs = []
                     for output in execute_request(service.users().messages().list(userId='me', q=f"from:{email}")):
                         if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
@@ -187,7 +193,6 @@ def apply_actions():
 
                     if msgs:
                         ids = [m['id'] for m in msgs]
-                        # 2. Trash (With Logging Retry)
                         for output in execute_request(service.users().messages().batchModify(
                             userId='me', body={'ids': ids, 'addLabelIds': ['TRASH']}
                         )):
@@ -206,7 +211,6 @@ def apply_actions():
                         
                         yield json.dumps({"msg": f"  - Creating Label: '{label_name}'..."}) + "\n"
                         try:
-                            # 3. Create Label (With Logging Retry)
                             created = None
                             for output in execute_request(service.users().labels().create(userId='me', body={'name': label_name})):
                                 if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
@@ -217,7 +221,6 @@ def apply_actions():
                         except HttpError:
                             yield json.dumps({"msg": f"  - Label '{label_name}' likely exists. Fetching ID..."}) + "\n"
                             
-                            # 4. Fetch Labels (With Logging Retry)
                             lbls = []
                             for output in execute_request(service.users().labels().list(userId='me')):
                                 if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
@@ -237,7 +240,6 @@ def apply_actions():
                             'action': {'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']} 
                         }
                         try:
-                            # 5. Create Filter (With Logging Retry)
                             for output in execute_request(service.users().settings().filters().create(userId='me', body=filter_body)):
                                 if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
                             
@@ -247,7 +249,6 @@ def apply_actions():
 
                         yield json.dumps({"msg": "  - Moving existing emails..."}) + "\n"
                         
-                        # 6. Search Existing (With Logging Retry)
                         msgs = []
                         for output in execute_request(service.users().messages().list(userId='me', q=f"from:{email}")):
                              if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
@@ -257,7 +258,6 @@ def apply_actions():
                             ids = [m['id'] for m in msgs]
                             batch_body = {'ids': ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}
                             
-                            # 7. Move Existing (With Logging Retry)
                             for output in execute_request(service.users().messages().batchModify(userId='me', body=batch_body)):
                                 if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
                                 

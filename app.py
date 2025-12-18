@@ -38,10 +38,17 @@ def get_service():
     """Creates a service with a ROBUST timeout."""
     creds = get_creds()
     if not creds: return None
-    # INCREASED TIMEOUT: 30 seconds (was 15)
+    
+    # 1. Create the base HTTP object with the 30s TIMEOUT
     http = httplib2.Http(timeout=30)
+    
+    # 2. Wrap it with Credentials (Authorizes it)
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
-    return build('gmail', 'v1', requestBuilder=google_auth_httplib2.Request, http=authorized_http)
+    
+    # 3. Build the service
+    # FIX: Removed 'requestBuilder' argument which caused the crash.
+    # We simply pass the authorized_http object, and Google handles the rest.
+    return build('gmail', 'v1', http=authorized_http)
 
 @app.route('/')
 def index():
@@ -81,7 +88,6 @@ def scan_stream():
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...'})}\n\n"
         
         # --- CONNECTION RETRY LOOP ---
-        # Tries to connect 3 times before failing
         request = None
         connect_attempts = 0
         last_error = ""
@@ -89,9 +95,7 @@ def scan_stream():
         while connect_attempts < 3:
             try:
                 request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
-                # Test execution to ensure connection is alive
-                request.execute() 
-                # If we get here, connection is good! Reset request object to start fresh.
+                request.execute() # Test connection
                 request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
                 break
             except Exception as e:
@@ -101,7 +105,6 @@ def scan_stream():
                 time.sleep(2)
         
         if connect_attempts >= 3:
-            # SHOW THE REAL ERROR
             yield f"data: {json.dumps({'error': f'Connection Failed: {last_error}'})}\n\n"
             return
 
@@ -114,10 +117,9 @@ def scan_stream():
                     request = service.users().messages().list_next(request, response)
                     yield f"data: {json.dumps({'status': 'counting', 'count': len(messages)})}\n\n"
                 except Exception:
-                    # If page fetch fails, stop but keep data we have
                     break
         except Exception as e:
-             pass # Use whatever data we found
+             pass 
 
         total_messages = len(messages)
         if total_messages == 0:

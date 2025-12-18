@@ -35,11 +35,11 @@ def get_creds():
     return Credentials(**session['credentials'])
 
 def get_service():
-    """Creates a service with a HARD timeout to prevent hanging."""
+    """Creates a service with a ROBUST timeout."""
     creds = get_creds()
     if not creds: return None
-    # Force a 15-second timeout on the network level
-    http = httplib2.Http(timeout=15)
+    # INCREASED TIMEOUT: 30 seconds (was 15)
+    http = httplib2.Http(timeout=30)
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
     return build('gmail', 'v1', requestBuilder=google_auth_httplib2.Request, http=authorized_http)
 
@@ -75,31 +75,49 @@ def scan_stream():
         return Response("data: " + json.dumps({'error': 'Not logged in'}) + "\n\n", mimetype='text/event-stream')
 
     def generate():
-        # USE THE ROBUST SERVICE (Fixes the hanging!)
         service = get_service()
-        
         messages = []
-        next_page_token = None
         
-        # Initial Fetch with Retry
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...'})}\n\n"
         
-        # Loop to get message IDs (max 500 for speed)
-        # We wrap this in a loop to handle "Next Page" pagination safely
+        # --- CONNECTION RETRY LOOP ---
+        # Tries to connect 3 times before failing
+        request = None
+        connect_attempts = 0
+        last_error = ""
+        
+        while connect_attempts < 3:
+            try:
+                request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
+                # Test execution to ensure connection is alive
+                request.execute() 
+                # If we get here, connection is good! Reset request object to start fresh.
+                request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
+                break
+            except Exception as e:
+                last_error = str(e)
+                connect_attempts += 1
+                yield f"data: {json.dumps({'status': 'init', 'message': f'Connection unstable. Retrying ({connect_attempts}/3)...'})}\n\n"
+                time.sleep(2)
+        
+        if connect_attempts >= 3:
+            # SHOW THE REAL ERROR
+            yield f"data: {json.dumps({'error': f'Connection Failed: {last_error}'})}\n\n"
+            return
+
+        # --- MAIN SCAN LOOP ---
         try:
-            request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
             while request is not None:
                 try:
                     response = request.execute()
                     messages.extend(response.get('messages', []))
                     request = service.users().messages().list_next(request, response)
                     yield f"data: {json.dumps({'status': 'counting', 'count': len(messages)})}\n\n"
-                except Exception as e:
-                    # If fetching list fails mid-way, just stop and work with what we have
+                except Exception:
+                    # If page fetch fails, stop but keep data we have
                     break
         except Exception as e:
-             yield f"data: {json.dumps({'error': 'Connection Failed. Please reload.'})}\n\n"
-             return
+             pass # Use whatever data we found
 
         total_messages = len(messages)
         if total_messages == 0:
@@ -126,8 +144,7 @@ def scan_stream():
             
             try:
                 batch.execute()
-            except Exception as e:
-                # If a batch fails, we skip it to keep moving
+            except Exception:
                 pass
 
             processed_count = min(i + batch_size, total_messages)

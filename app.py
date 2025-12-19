@@ -78,24 +78,28 @@ def scan_stream():
         
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...'})}\n\n"
         
-        # --- HELPER: Universal Retry Function ---
-        def fetch_with_retry(execute_method):
+        # --- HELPER: Logic Fix ---
+        # Now returns True if successful, False if failed
+        def fetch_with_retry(execute_method, is_batch=False):
             attempts = 0
             while attempts < 5:
                 try:
-                    return execute_method()
+                    result = execute_method()
+                    # If it's a batch, result is None (which is good!)
+                    # If it's a list request, result is a dict (which is good!)
+                    if is_batch: return True 
+                    return result
                 except Exception as e:
                     attempts += 1
-                    # Exponential Backoff: 2s, 4s, 8s, 16s...
                     time.sleep(2 ** attempts)
-            return None 
+            return None # Failed after 5 attempts
 
         # --- PHASE 1: LIST MESSAGES ---
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
         
         while request is not None:
-            # Retry fetching the list page
-            response = fetch_with_retry(request.execute)
+            # Pass False because this expects a return value (the list of emails)
+            response = fetch_with_retry(request.execute, is_batch=False)
             
             if response is None:
                 yield f"data: {json.dumps({'error': 'Failed to fetch email list. Stopping.'})}\n\n"
@@ -112,7 +116,8 @@ def scan_stream():
 
         # --- PHASE 2: FETCH DETAILS (Accurate Mode) ---
         senders = []
-        batch_size = 50
+        # REDUCED BATCH SIZE for stability
+        batch_size = 25 
         
         for i in range(0, total_messages, batch_size):
             chunk = messages[i:i + batch_size]
@@ -129,14 +134,11 @@ def scan_stream():
             for msg in chunk:
                 batch.add(service.users().messages().get(userId='me', id=msg['id'], format='metadata', metadataHeaders=['From']), callback=batch_callback)
             
-            # CRITICAL FIX: Retry the BATCH execute if it fails
-            # Previously this was 'try: batch.execute() except: pass'
-            # Now it guarantees data integrity.
-            success = fetch_with_retry(batch.execute)
+            # Pass True because batch.execute() returns None on success
+            success = fetch_with_retry(batch.execute, is_batch=True)
             
-            if success is None:
+            if not success:
                 yield f"data: {json.dumps({'error': f'Failed to fetch details for batch {i}. Data may be incomplete.'})}\n\n"
-                # We continue to at least show partial data, but user knows it failed.
 
             processed_count = min(i + batch_size, total_messages)
             progress_data = {

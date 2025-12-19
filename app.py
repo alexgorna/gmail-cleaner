@@ -37,6 +37,7 @@ def get_creds():
 def get_service():
     creds = get_creds()
     if not creds: return None
+    # 30s timeout
     http = httplib2.Http(timeout=30)
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
     return build('gmail', 'v1', http=authorized_http)
@@ -100,7 +101,6 @@ def scan_stream():
             if not page_success:
                 yield f"data: {json.dumps({'error': 'CRITICAL: Failed to fetch full email list after retries.'})}\n\n"
                 return
-            
             page_num += 1
 
         total_messages = len(messages)
@@ -115,46 +115,76 @@ def scan_stream():
         batch_size = 25
         total_batches = (total_messages // batch_size) + 1
         
+        # We define the callback inside the loop to capture closure variables, 
+        # but we need a way to track failures per batch.
+        
         for i in range(0, total_messages, batch_size):
             chunk = messages[i:i + batch_size]
             current_batch_num = (i // batch_size) + 1
+            
+            # Tracking for this specific batch
+            batch_failures = [] 
+            
             batch = service.new_batch_http_request()
             
             def batch_callback(request_id, response, exception):
-                if exception is None:
+                if exception is not None:
+                    # Capture the ID of the failed message so we can retry it
+                    batch_failures.append(request_id)
+                else:
                     headers = response['payload']['headers']
                     from_header = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
                     match = re.search(r'<(.+?)>', from_header)
                     clean_email = match.group(1) if match else from_header
-                    
-                    # FIX: Normalize to lowercase and strip spaces
-                    final_email = clean_email.lower().strip()
-                    
-                    # DEBUG SPY: Print Shutterfly emails to the log
-                    if 'shutterfly' in final_email:
-                         # We print this to the console log so you can count them!
-                         # This does not affect the UI, just the black log window.
-                         pass 
-                         
-                    senders.append(final_email)
+                    senders.append(clean_email.lower().strip())
 
             for msg in chunk:
-                batch.add(service.users().messages().get(userId='me', id=msg['id'], format='metadata', metadataHeaders=['From']), callback=batch_callback)
+                # We explicitly pass request_id=msg['id'] so we know WHO failed
+                batch.add(service.users().messages().get(userId='me', id=msg['id'], format='metadata', metadataHeaders=['From']), 
+                          callback=batch_callback,
+                          request_id=msg['id'])
             
+            # Execute Batch
             batch_success = False
             for attempt in range(5):
                 try:
                     batch.execute()
                     batch_success = True
-                    yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed successfully.'})}\n\n"
                     break 
                 except Exception as e:
-                    yield f"data: {json.dumps({'log': f'Batch {current_batch_num} FAILED: {str(e)}. Retrying ({attempt+1}/5)...', 'level': 'error'})}\n\n"
+                    yield f"data: {json.dumps({'log': f'Batch {current_batch_num} connection failed: {str(e)}. Retrying...', 'level': 'error'})}\n\n"
                     time.sleep(2 ** attempt)
             
             if not batch_success:
-                yield f"data: {json.dumps({'log': f'SKIPPED Batch {current_batch_num} after 5 failures!', 'level': 'error'})}\n\n"
+                 yield f"data: {json.dumps({'log': f'CRITICAL: Batch {current_batch_num} dropped completely.', 'level': 'error'})}\n\n"
+
+            # --- REPAIR LOOP: Retry individual items that failed inside the batch ---
+            if batch_failures:
+                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} items failed. Retrying individually...', 'level': 'warn'})}\n\n"
+                
+                for failed_id in batch_failures:
+                    # Retry individually with backoff
+                    retry_success = False
+                    for retry_att in range(3):
+                        try:
+                            msg_detail = service.users().messages().get(userId='me', id=failed_id, format='metadata', metadataHeaders=['From']).execute()
+                            headers = msg_detail['payload']['headers']
+                            from_header = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
+                            match = re.search(r'<(.+?)>', from_header)
+                            clean_email = match.group(1) if match else from_header
+                            senders.append(clean_email.lower().strip())
+                            retry_success = True
+                            break
+                        except Exception:
+                            time.sleep(1)
+                    
+                    if not retry_success:
+                         yield f"data: {json.dumps({'log': f'Permanently failed to fetch message {failed_id}.', 'level': 'error'})}\n\n"
             
+            else:
+                # If no failures, just log success
+                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed perfectly.'})}\n\n"
+
             processed_count = min(i + batch_size, total_messages)
             progress_data = {
                 'status': 'progress',
@@ -166,7 +196,6 @@ def scan_stream():
 
         # --- PHASE 3: AGGREGATE ---
         df = pd.DataFrame(senders, columns=['email'])
-        # Group by email to ensure case-insensitive counting
         counts = df['email'].value_counts().reset_index()
         counts.columns = ['email', 'count']
         result_data = counts.to_dict(orient='records')

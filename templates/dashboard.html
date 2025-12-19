@@ -8,18 +8,16 @@
         .scrollable-table { max-height: 500px; overflow-y: auto; }
         .sticky-header th { position: sticky; top: 0; background-color: white; z-index: 1; }
         
-        /* Debugger / Log Window Styles */
+        /* Debugger Window Styles */
         .console-window {
             background-color: #1e1e1e;
             color: #00ff00;
             font-family: 'Courier New', Courier, monospace;
             font-size: 0.85rem;
-            height: 150px;
+            height: 200px;
             overflow-y: auto;
             border-radius: 5px;
             padding: 10px;
-            margin-top: 10px;
-            display: none; /* Hidden by default */
             border: 1px solid #444;
         }
         .log-info { color: #cccccc; }
@@ -30,7 +28,7 @@
 </head>
 <body class="bg-light p-5">
 
-<div class="container bg-white p-4 rounded shadow">
+<div class="container bg-white p-4 rounded shadow mb-4">
     <h2>Inbox Analyzer</h2>
     
     <div id="progress-container" class="my-3">
@@ -41,7 +39,6 @@
         <div class="progress" style="height: 25px;">
             <div id="progress-bar-inner" class="progress-bar progress-bar-striped progress-bar-animated" style="width: 1%"></div>
         </div>
-        <div id="scan-debugger" class="console-window"></div>
     </div>
 
     <div id="error-alert" class="alert alert-danger" style="display:none;" role="alert"></div>
@@ -62,13 +59,15 @@
         </div>
     </div>
 
-    <div id="activity-log-container" class="mt-4" style="display:none;">
-        <h5>Activity Log</h5>
-        <div id="activity-log" class="console-window" style="background-color: #f8f9fa; color: black; border: 1px solid #dee2e6;"></div>
-    </div>
-
     <div class="mt-4 d-grid gap-2">
         <button id="apply-btn" class="btn btn-primary btn-lg" onclick="applyChanges()">APPLY CHANGES</button>
+    </div>
+</div>
+
+<div class="container bg-white p-3 rounded shadow">
+    <h5>System Logs & Debugger</h5>
+    <div id="scan-debugger" class="console-window">
+        <div class="log-info">Waiting for start...</div>
     </div>
 </div>
 
@@ -109,10 +108,13 @@
 
     function logToScanDebugger(msg, type='info') {
         const consoleWin = document.getElementById('scan-debugger');
-        consoleWin.style.display = 'block';
         const line = document.createElement('div');
         line.className = `log-${type}`;
-        line.innerText = `> ${msg}`;
+        
+        // Add timestamp
+        const time = new Date().toLocaleTimeString();
+        line.innerText = `[${time}] ${msg}`;
+        
         consoleWin.appendChild(line);
         consoleWin.scrollTop = consoleWin.scrollHeight;
     }
@@ -134,20 +136,21 @@
         const progressText = document.getElementById('progress-text');
         const progressPercent = document.getElementById('progress-percent');
         
-        logToScanDebugger("Starting scan connection...", "info");
+        // Clear previous logs
+        document.getElementById('scan-debugger').innerHTML = '';
+        logToScanDebugger("Initializing connection...", "info");
 
         evtSource.onmessage = function(event) {
             const data = JSON.parse(event.data);
 
-            // HANDLE LOG MESSAGES FROM BACKEND
             if (data.log) {
                 logToScanDebugger(data.log, data.level || 'info');
-                return;
+                // We don't return here because 'log' messages might also have 'progress' data attached
             }
 
             if (data.error) {
                 showError(data.error);
-                logToScanDebugger("FATAL ERROR: " + data.error, "error");
+                logToScanDebugger("CRITICAL ERROR: " + data.error, "error");
                 evtSource.close();
                 return;
             }
@@ -171,9 +174,10 @@
                 document.getElementById('email-table-body').innerHTML = '';
                 loadMoreRows(); 
                 evtSource.close();
-                setTimeout(() => document.getElementById('progress-container').style.display = 'none', 3000); // Keep open a bit to read logs
+                // REMOVED: The line that hid the progress bar. Now it stays visible.
             }
         };
+        
         evtSource.onerror = function() { 
             logToScanDebugger("EventSource connection lost.", "error");
             evtSource.close(); 
@@ -263,10 +267,9 @@
 
         document.getElementById('apply-btn').disabled = true;
         document.getElementById('apply-btn').innerText = "Processing...";
-        const logDiv = document.getElementById('activity-log');
-        document.getElementById('activity-log-container').style.display = 'block';
-        logDiv.style.display = 'block';
-        logDiv.innerHTML = '<div class="log-line">Starting...</div>';
+        // We reuse the bottom console for this too, or you can keep the separate one. 
+        // For simplicity, I'll log to the same bottom window so everything is in one place.
+        logToScanDebugger("Starting Apply Changes...", "info");
 
         try {
             const response = await fetch('/api/apply_actions', {
@@ -283,21 +286,20 @@
                     try {
                         const jsonLog = JSON.parse(line);
                         if (jsonLog.status === 'complete') {
+                            logToScanDebugger("All actions complete. Reloading...", "success");
                             setTimeout(() => window.location.reload(), 2000);
                         } else if (jsonLog.msg) {
-                            const p = document.createElement('div');
-                            p.className = 'log-line';
-                            if(jsonLog.msg.includes("ERROR")) p.className += ' log-error';
-                            if(jsonLog.msg.includes("Warning")) p.className += ' log-warn';
-                            p.innerText = jsonLog.msg;
-                            logDiv.appendChild(p);
-                            logDiv.scrollTop = logDiv.scrollHeight; 
+                            let type = 'info';
+                            if(jsonLog.msg.includes("ERROR")) type = 'error';
+                            if(jsonLog.msg.includes("Warning")) type = 'warn';
+                            if(jsonLog.msg.includes("SUCCESS")) type = 'success';
+                            logToScanDebugger(jsonLog.msg, type);
                         }
                     } catch(e) {}
                 }
             }
         } catch (err) {
-            logDiv.innerHTML += `<div class="log-line log-error">Connection Error: ${err.message}</div>`;
+            logToScanDebugger(`Connection Error: ${err.message}`, "error");
             document.getElementById('apply-btn').disabled = false;
         }
     }

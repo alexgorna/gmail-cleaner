@@ -76,12 +76,9 @@ def scan_stream():
         service = get_service()
         messages = []
         
-        yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...'})}\n\n"
+        yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...', 'log': 'Starting connection to Gmail API...'})}\n\n"
         
         # --- PHASE 1: LIST MESSAGES ---
-        # Robust Retry Logic: Try 5 times to fetch a page before giving up.
-        yield f"data: {json.dumps({'log': 'Fetching message ID list...', 'level': 'info'})}\n\n"
-        
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
         
         page_num = 1
@@ -90,15 +87,16 @@ def scan_stream():
             for attempt in range(5):
                 try:
                     response = request.execute()
-                    messages.extend(response.get('messages', []))
+                    msgs = response.get('messages', [])
+                    messages.extend(msgs)
                     
-                    yield f"data: {json.dumps({'status': 'counting', 'count': len(messages)})}\n\n"
+                    yield f"data: {json.dumps({'status': 'counting', 'count': len(messages), 'log': f'Fetched page {page_num} ({len(msgs)} items). Total: {len(messages)}'})}\n\n"
                     
                     request = service.users().messages().list_next(request, response)
                     page_success = True
                     break 
                 except Exception as e:
-                    yield f"data: {json.dumps({'log': f'List Page {page_num} failed: {str(e)}. Retrying ({attempt+1}/5)...', 'level': 'warn'})}\n\n"
+                    yield f"data: {json.dumps({'log': f'Page {page_num} failed: {str(e)}. Retrying ({attempt+1}/5)...', 'level': 'warn'})}\n\n"
                     time.sleep(2 ** attempt)
             
             if not page_success:
@@ -108,7 +106,7 @@ def scan_stream():
             page_num += 1
 
         total_messages = len(messages)
-        yield f"data: {json.dumps({'log': f'Found {total_messages} IDs. Fetching details...', 'level': 'success'})}\n\n"
+        yield f"data: {json.dumps({'log': f'List complete. Found {total_messages} emails. Starting Detail Scan...', 'level': 'success'})}\n\n"
         
         if total_messages == 0:
             yield f"data: {json.dumps({'status': 'complete', 'data': []})}\n\n"
@@ -116,10 +114,12 @@ def scan_stream():
 
         # --- PHASE 2: FETCH DETAILS ---
         senders = []
-        batch_size = 25 
+        batch_size = 25
+        total_batches = (total_messages // batch_size) + 1
         
         for i in range(0, total_messages, batch_size):
             chunk = messages[i:i + batch_size]
+            current_batch_num = (i // batch_size) + 1
             batch = service.new_batch_http_request()
             
             def batch_callback(request_id, response, exception):
@@ -139,14 +139,15 @@ def scan_stream():
                 try:
                     batch.execute()
                     batch_success = True
-                    # yield f"data: {json.dumps({'log': f'Batch {i//batch_size + 1} done.', 'level': 'info'})}\n\n"
+                    # HEARTBEAT LOG: Shows movement!
+                    yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed successfully.'})}\n\n"
                     break 
                 except Exception as e:
-                    yield f"data: {json.dumps({'log': f'Batch {i//batch_size + 1} FAILED: {str(e)}. Retrying ({attempt+1}/5)...', 'level': 'error'})}\n\n"
+                    yield f"data: {json.dumps({'log': f'Batch {current_batch_num} FAILED: {str(e)}. Retrying ({attempt+1}/5)...', 'level': 'error'})}\n\n"
                     time.sleep(2 ** attempt)
             
             if not batch_success:
-                yield f"data: {json.dumps({'log': f'SKIPPED Batch {i//batch_size + 1} after 5 failures!', 'level': 'error'})}\n\n"
+                yield f"data: {json.dumps({'log': f'SKIPPED Batch {current_batch_num} after 5 failures! Data loss imminent.', 'level': 'error'})}\n\n"
             
             processed_count = min(i + batch_size, total_messages)
             progress_data = {
@@ -163,7 +164,7 @@ def scan_stream():
         counts.columns = ['email', 'count']
         result_data = counts.to_dict(orient='records')
         
-        yield f"data: {json.dumps({'status': 'complete', 'data': result_data})}\n\n"
+        yield f"data: {json.dumps({'status': 'complete', 'data': result_data, 'log': 'Analysis Complete. Rendering table...', 'level': 'success'})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
@@ -225,6 +226,7 @@ def apply_actions():
                                 yield json.dumps({"msg": f"    ...trashed {total_trashed} so far..."}) + "\n"
                             except:
                                 yield json.dumps({"msg": "    ...chunk failed, skipping..."}) + "\n"
+                        
                         yield json.dumps({"msg": f"  - SUCCESS: Trashed {total_trashed} emails total."}) + "\n"
                     else:
                         yield json.dumps({"msg": "  - No emails found to delete."}) + "\n"

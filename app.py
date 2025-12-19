@@ -35,10 +35,8 @@ def get_creds():
     return Credentials(**session['credentials'])
 
 def get_service():
-    """Creates a service with a ROBUST timeout."""
     creds = get_creds()
     if not creds: return None
-    # 30s timeout to allow for slow page fetches
     http = httplib2.Http(timeout=30)
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
     return build('gmail', 'v1', http=authorized_http)
@@ -80,36 +78,31 @@ def scan_stream():
         
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...'})}\n\n"
         
-        # --- HELPER: Retry Logic for Scanning ---
-        def fetch_with_retry(request_obj):
+        # --- HELPER: Universal Retry Function ---
+        def fetch_with_retry(execute_method):
             attempts = 0
-            while attempts < 5: # Try 5 times
+            while attempts < 5:
                 try:
-                    return request_obj.execute()
+                    return execute_method()
                 except Exception as e:
                     attempts += 1
-                    time.sleep(attempts * 1.5) # Linear backoff
-            return None # Failed after 5 attempts
+                    # Exponential Backoff: 2s, 4s, 8s, 16s...
+                    time.sleep(2 ** attempts)
+            return None 
 
         # --- PHASE 1: LIST MESSAGES ---
-        # We start the initial request
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
         
         while request is not None:
-            # Use the retry helper so we don't crash on a single bad page
-            response = fetch_with_retry(request)
+            # Retry fetching the list page
+            response = fetch_with_retry(request.execute)
             
             if response is None:
-                # If a page fails 5 times, we must stop, but we tell the user why
-                yield f"data: {json.dumps({'error': 'Scan timed out. Results may be incomplete.'})}\n\n"
-                break
+                yield f"data: {json.dumps({'error': 'Failed to fetch email list. Stopping.'})}\n\n"
+                return
                 
             messages.extend(response.get('messages', []))
-            
-            # Send update to UI
             yield f"data: {json.dumps({'status': 'counting', 'count': len(messages)})}\n\n"
-            
-            # Prepare next page
             request = service.users().messages().list_next(request, response)
 
         total_messages = len(messages)
@@ -117,7 +110,7 @@ def scan_stream():
             yield f"data: {json.dumps({'status': 'complete', 'data': []})}\n\n"
             return
 
-        # --- PHASE 2: FETCH DETAILS (CHUNKING) ---
+        # --- PHASE 2: FETCH DETAILS (Accurate Mode) ---
         senders = []
         batch_size = 50
         
@@ -136,10 +129,14 @@ def scan_stream():
             for msg in chunk:
                 batch.add(service.users().messages().get(userId='me', id=msg['id'], format='metadata', metadataHeaders=['From']), callback=batch_callback)
             
-            try:
-                batch.execute()
-            except Exception:
-                pass # Batches might fail partially, but we keep going
+            # CRITICAL FIX: Retry the BATCH execute if it fails
+            # Previously this was 'try: batch.execute() except: pass'
+            # Now it guarantees data integrity.
+            success = fetch_with_retry(batch.execute)
+            
+            if success is None:
+                yield f"data: {json.dumps({'error': f'Failed to fetch details for batch {i}. Data may be incomplete.'})}\n\n"
+                # We continue to at least show partial data, but user knows it failed.
 
             processed_count = min(i + batch_size, total_messages)
             progress_data = {

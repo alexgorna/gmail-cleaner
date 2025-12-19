@@ -37,6 +37,7 @@ def get_creds():
 def get_service():
     creds = get_creds()
     if not creds: return None
+    # 30s timeout to prevent hanging on slow requests
     http = httplib2.Http(timeout=30)
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
     return build('gmail', 'v1', http=authorized_http)
@@ -78,27 +79,25 @@ def scan_stream():
         
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...'})}\n\n"
         
-        # --- HELPER: Logic Fix ---
-        # Now returns True if successful, False if failed
+        # --- RETRY HELPER ---
+        # Returns the result if successful, or None if it fails 5 times
         def fetch_with_retry(execute_method, is_batch=False):
             attempts = 0
             while attempts < 5:
                 try:
                     result = execute_method()
-                    # If it's a batch, result is None (which is good!)
-                    # If it's a list request, result is a dict (which is good!)
-                    if is_batch: return True 
+                    if is_batch: return True # Batch executes return None on success
                     return result
                 except Exception as e:
                     attempts += 1
-                    time.sleep(2 ** attempts)
-            return None # Failed after 5 attempts
+                    time.sleep(2 ** attempts) # Wait 2s, 4s, 8s...
+            return None
 
-        # --- PHASE 1: LIST MESSAGES ---
+        # --- PHASE 1: LIST ALL MESSAGES ---
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
         
         while request is not None:
-            # Pass False because this expects a return value (the list of emails)
+            # Retry fetching the list page so we don't crash
             response = fetch_with_retry(request.execute, is_batch=False)
             
             if response is None:
@@ -114,10 +113,9 @@ def scan_stream():
             yield f"data: {json.dumps({'status': 'complete', 'data': []})}\n\n"
             return
 
-        # --- PHASE 2: FETCH DETAILS (Accurate Mode) ---
+        # --- PHASE 2: FETCH SENDER DETAILS ---
         senders = []
-        # REDUCED BATCH SIZE for stability
-        batch_size = 25 
+        batch_size = 25 # Keeping batch small for stability
         
         for i in range(0, total_messages, batch_size):
             chunk = messages[i:i + batch_size]
@@ -127,14 +125,19 @@ def scan_stream():
                 if exception is None:
                     headers = response['payload']['headers']
                     from_header = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
+                    
+                    # Extract email inside <...> or use the whole string if no brackets
                     match = re.search(r'<(.+?)>', from_header)
                     clean_email = match.group(1) if match else from_header
-                    senders.append(clean_email)
+                    
+                    # We strip() to remove hidden spaces, which might split counts
+                    senders.append(clean_email.strip())
 
             for msg in chunk:
                 batch.add(service.users().messages().get(userId='me', id=msg['id'], format='metadata', metadataHeaders=['From']), callback=batch_callback)
             
-            # Pass True because batch.execute() returns None on success
+            # CRITICAL FIX: We retry the batch if it fails.
+            # This ensures we don't "drop" 25 emails just because the network blinked.
             success = fetch_with_retry(batch.execute, is_batch=True)
             
             if not success:

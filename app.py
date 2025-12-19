@@ -1,271 +1,344 @@
 import os
-import time
-import requests
-import sqlite3
+import json
 import pandas as pd
-import io
-from flask import Flask, render_template, request, redirect, url_for, session, abort, send_file
+import re
+import time
+import random
+import socket
+import httplib2
+import google_auth_httplib2
+from werkzeug.middleware.proxy_fix import ProxyFix
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response, stream_with_context
 from google_auth_oauthlib.flow import Flow
-from pip._vendor import cachecontrol
-from google.oauth2 import id_token
-import google.auth.transport.requests
-
-# --- CONFIGURATION ---
-# Allow HTTP for local testing and Railway internal routing
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
-
-# THE FIX: Allow Google to send extra scope data (OpenID) without crashing
-os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1' 
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "super_secret_key_needs_to_be_changed")
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_key_for_testing_only')
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
-# Google OAuth Configuration
-GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+# --- THE FIX: Prevents the login crash ---
+os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
+
 CLIENT_SECRETS_FILE = "client_secret.json"
 SCOPES = [
-    "https://www.googleapis.com/auth/userinfo.profile", 
-    "https://www.googleapis.com/auth/userinfo.email", 
-    "openid"
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.modify',
+    'https://www.googleapis.com/auth/gmail.settings.basic'
 ]
 
-DB_NAME = "search_console.db"
+if os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'):
+    with open('client_secret.json', 'w') as f:
+        f.write(os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'))
 
-# --- DATABASE HELPER ---
-def get_db_connection():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_creds():
+    if 'credentials' not in session: return None
+    return Credentials(**session['credentials'])
 
-def init_db():
-    conn = get_db_connection()
-    # Create Users table with profile support
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            email TEXT UNIQUE,
-            name TEXT,
-            profile_pic TEXT,
-            last_login DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    # Create Keywords table
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS keywords (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT,
-            keyword TEXT,
-            target_url TEXT,
-            rank INTEGER,
-            last_checked DATETIME,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-    ''')
-    conn.commit()
-    conn.close()
+def get_service():
+    creds = get_creds()
+    if not creds: return None
+    # 30s timeout
+    http = httplib2.Http(timeout=30)
+    authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
+    return build('gmail', 'v1', http=authorized_http)
 
-# Initialize DB on startup
-init_db()
-
-# --- CORE LOGIC ---
-def check_keyword_ranking(keyword, target_url):
-    """
-    Scrapes Google Search to find the rank of a target_url for a keyword.
-    Returns: Rank (1-100) or None if not found.
-    """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    search_url = f"https://www.google.com/search?q={keyword}&num=100"
-    
-    try:
-        response = requests.get(search_url, headers=headers)
-        if response.status_code != 200:
-            return None
-        
-        # Simple parsing logic (can be replaced with BeautifulSoup for robustness)
-        text = response.text
-        # This is a basic approximation. For production, consider an API like SerpApi.
-        if target_url in text:
-            # Very rough estimation based on string finding; 
-            # Real SEO scraping requires parsing the specific DOM elements.
-            return 1 # Placeholder for "Found"
-        return None
-    except Exception as e:
-        print(f"Error checking {keyword}: {e}")
-        return None
-
-# --- ROUTES ---
-
-@app.route("/")
+@app.route('/')
 def index():
-    if "google_id" in session:
-        return redirect(url_for("dashboard"))
-    return render_template("index.html")
+    if not get_creds(): return render_template('login.html') 
+    return render_template('dashboard.html')
 
-@app.route("/login")
+@app.route('/login')
 def login():
-    flow = Flow.from_client_secrets_file(
-        CLIENT_SECRETS_FILE,
-        scopes=SCOPES
-    )
-    flow.redirect_uri = url_for("callback", _external=True)
-    authorization_url, state = flow.authorization_url()
-    session["state"] = state
-    return redirect(authorization_url)
+    redirect_uri = url_for('callback', _external=True)
+    flow = Flow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES, redirect_uri=redirect_uri)
+    auth_url, state = flow.authorization_url(access_type='offline', prompt='consent')
+    session['state'] = state
+    return redirect(auth_url)
 
-@app.route("/callback")
+@app.route('/callback')
 def callback():
-    flow = Flow.from_client_secrets_file(
-        CLIENT_SECRETS_FILE,
-        scopes=SCOPES,
-        state=session["state"]
-    )
-    flow.redirect_uri = url_for("callback", _external=True)
-
-    # Use the fix allowed by OAUTHLIB_RELAX_TOKEN_SCOPE
+    redirect_uri = url_for('callback', _external=True)
+    flow = Flow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES, redirect_uri=redirect_uri)
     flow.fetch_token(authorization_response=request.url)
-
-    credentials = flow.credentials
-    request_session = requests.session()
-    cached_session = cachecontrol.CacheControl(request_session)
-    token_request = google.auth.transport.requests.Request(session=cached_session)
-
-    id_info = id_token.verify_oauth2_token(
-        id_token=credentials.id_token,
-        request=token_request,
-        audience=GOOGLE_CLIENT_ID
-    )
-
-    # Extract user info
-    session["google_id"] = id_info.get("sub")
-    session["name"] = id_info.get("name")
-    session["email"] = id_info.get("email")
-    session["profile_pic"] = id_info.get("picture")
-
-    # Save to DB
-    conn = get_db_connection()
-    conn.execute('''
-        INSERT INTO users (id, email, name, profile_pic, last_login)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(id) DO UPDATE SET
-            name=excluded.name,
-            profile_pic=excluded.profile_pic,
-            last_login=CURRENT_TIMESTAMP
-    ''', (session["google_id"], session["email"], session["name"], session["profile_pic"]))
-    conn.commit()
-    conn.close()
-
-    return redirect(url_for("dashboard"))
-
-@app.route("/dashboard")
-def dashboard():
-    if "google_id" not in session:
-        return redirect(url_for("login"))
-
-    user_id = session["google_id"]
-    
-    # Get Filter/Search params
-    search_query = request.args.get('search', '')
-    page = request.args.get('page', 1, type=int)
-    per_page = 5
-    offset = (page - 1) * per_page
-
-    conn = get_db_connection()
-    
-    # Logic for Search + Pagination
-    if search_query:
-        query = f"%{search_query}%"
-        keywords = conn.execute(
-            'SELECT * FROM keywords WHERE user_id = ? AND keyword LIKE ? LIMIT ? OFFSET ?',
-            (user_id, query, per_page, offset)
-        ).fetchall()
-        total_count = conn.execute(
-            'SELECT COUNT(*) FROM keywords WHERE user_id = ? AND keyword LIKE ?',
-            (user_id, query)
-        ).fetchone()[0]
-    else:
-        keywords = conn.execute(
-            'SELECT * FROM keywords WHERE user_id = ? LIMIT ? OFFSET ?',
-            (user_id, per_page, offset)
-        ).fetchall()
-        total_count = conn.execute(
-            'SELECT COUNT(*) FROM keywords WHERE user_id = ?',
-            (user_id,)
-        ).fetchone()[0]
-
-    conn.close()
-
-    total_pages = (total_count + per_page - 1) // per_page
-
-    user_data = {
-        "name": session.get("name"),
-        "picture": session.get("profile_pic")
+    creds = flow.credentials
+    session['credentials'] = {
+        'token': creds.token, 'refresh_token': creds.refresh_token,
+        'token_uri': creds.token_uri, 'client_id': creds.client_id,
+        'client_secret': creds.client_secret, 'scopes': creds.scopes
     }
+    return redirect(url_for('index'))
 
-    return render_template(
-        "dashboard.html", 
-        keywords=keywords, 
-        user=user_data, 
-        page=page, 
-        total_pages=total_pages,
-        search_query=search_query
-    )
+@app.route('/api/scan_stream')
+def scan_stream():
+    if not get_creds(): 
+        return Response("data: " + json.dumps({'error': 'Not logged in'}) + "\n\n", mimetype='text/event-stream')
 
-@app.route("/add_keyword", methods=["POST"])
-def add_keyword():
-    if "google_id" not in session:
-        return redirect(url_for("login"))
+    def generate():
+        service = get_service()
+        messages = []
+        
+        yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...', 'log': 'Starting connection to Gmail API...'})}\n\n"
+        
+        # --- PHASE 1: LIST MESSAGES ---
+        request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
+        
+        page_num = 1
+        while request is not None:
+            page_success = False
+            for attempt in range(5):
+                try:
+                    response = request.execute()
+                    msgs = response.get('messages', [])
+                    messages.extend(msgs)
+                    yield f"data: {json.dumps({'status': 'counting', 'count': len(messages), 'log': f'Fetched page {page_num} ({len(msgs)} items). Total: {len(messages)}'})}\n\n"
+                    request = service.users().messages().list_next(request, response)
+                    page_success = True
+                    break 
+                except Exception as e:
+                    yield f"data: {json.dumps({'log': f'Page {page_num} failed: {str(e)}. Retrying ({attempt+1}/5)...', 'level': 'warn'})}\n\n"
+                    time.sleep(2 ** attempt)
+            
+            if not page_success:
+                yield f"data: {json.dumps({'error': 'CRITICAL: Failed to fetch full email list after retries.'})}\n\n"
+                return
+            page_num += 1
 
-    keyword = request.form.get("keyword")
-    target_url = request.form.get("url")
-    user_id = session["google_id"]
+        total_messages = len(messages)
+        yield f"data: {json.dumps({'log': f'List complete. Found {total_messages} emails. Starting Detail Scan...', 'level': 'success'})}\n\n"
+        
+        if total_messages == 0:
+            yield f"data: {json.dumps({'status': 'complete', 'data': []})}\n\n"
+            return
 
-    if keyword and target_url:
-        conn = get_db_connection()
-        conn.execute(
-            'INSERT INTO keywords (user_id, keyword, target_url, rank, last_checked) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)',
-            (user_id, keyword, target_url, 0) # Default rank 0
-        )
-        conn.commit()
-        conn.close()
+        # --- PHASE 2: FETCH DETAILS ---
+        senders = []
+        batch_size = 25
+        total_batches = (total_messages // batch_size) + 1
+        
+        for i in range(0, total_messages, batch_size):
+            chunk = messages[i:i + batch_size]
+            current_batch_num = (i // batch_size) + 1
+            batch_failures = [] 
+            
+            batch = service.new_batch_http_request()
+            
+            def batch_callback(request_id, response, exception):
+                if exception is not None:
+                    batch_failures.append(request_id)
+                else:
+                    headers = response['payload']['headers']
+                    from_header = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
+                    match = re.search(r'<(.+?)>', from_header)
+                    clean_email = match.group(1) if match else from_header
+                    senders.append(clean_email.lower().strip())
 
-    return redirect(url_for("dashboard"))
+            for msg in chunk:
+                batch.add(service.users().messages().get(userId='me', id=msg['id'], format='metadata', metadataHeaders=['From']), 
+                          callback=batch_callback,
+                          request_id=msg['id'])
+            
+            # Execute Batch
+            batch_success = False
+            for attempt in range(5):
+                try:
+                    batch.execute()
+                    batch_success = True
+                    break 
+                except Exception as e:
+                    yield f"data: {json.dumps({'log': f'Batch {current_batch_num} connection failed: {str(e)}. Retrying...', 'level': 'error'})}\n\n"
+                    time.sleep(2 ** attempt)
+            
+            if not batch_success:
+                 yield f"data: {json.dumps({'log': f'CRITICAL: Batch {current_batch_num} dropped completely.', 'level': 'error'})}\n\n"
 
-@app.route("/delete_keyword/<int:keyword_id>")
-def delete_keyword(keyword_id):
-    if "google_id" not in session:
-        return redirect(url_for("login"))
-    
-    conn = get_db_connection()
-    conn.execute('DELETE FROM keywords WHERE id = ? AND user_id = ?', (keyword_id, session["google_id"]))
-    conn.commit()
-    conn.close()
-    
-    return redirect(url_for("dashboard"))
+            # --- REPAIR LOOP WITH HEARTBEAT ---
+            if batch_failures:
+                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} items failed. Repairing...', 'level': 'warn'})}\n\n"
+                
+                count_repaired = 0
+                for failed_id in batch_failures:
+                    # NEW: Heartbeat yield to keep connection alive during slow repairs
+                    count_repaired += 1
+                    # Only log every 3rd repair to avoid spamming the UI, but send empty data to keep connection open
+                    if count_repaired % 2 == 0:
+                         yield f"data: {json.dumps({'log': f'  ...repairing item {count_repaired}/{len(batch_failures)} in batch {current_batch_num}...', 'level': 'info'})}\n\n"
+                    
+                    retry_success = False
+                    for retry_att in range(3):
+                        try:
+                            msg_detail = service.users().messages().get(userId='me', id=failed_id, format='metadata', metadataHeaders=['From']).execute()
+                            headers = msg_detail['payload']['headers']
+                            from_header = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
+                            match = re.search(r'<(.+?)>', from_header)
+                            clean_email = match.group(1) if match else from_header
+                            senders.append(clean_email.lower().strip())
+                            retry_success = True
+                            break
+                        except Exception:
+                            time.sleep(1)
+                    
+                    if not retry_success:
+                         yield f"data: {json.dumps({'log': f'Permanently failed to fetch message {failed_id}.', 'level': 'error'})}\n\n"
+            
+            else:
+                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed perfectly.'})}\n\n"
 
-@app.route("/export_csv")
-def export_csv():
-    if "google_id" not in session:
-        return redirect(url_for("login"))
+            processed_count = min(i + batch_size, total_messages)
+            progress_data = {
+                'status': 'progress',
+                'processed': processed_count,
+                'total': total_messages,
+                'percent': int((processed_count / total_messages) * 100)
+            }
+            yield f"data: {json.dumps(progress_data)}\n\n"
 
-    conn = get_db_connection()
-    df = pd.read_sql_query("SELECT keyword, target_url, rank, last_checked FROM keywords WHERE user_id = ?", conn, params=(session["google_id"],))
-    conn.close()
+        # --- PHASE 3: AGGREGATE ---
+        df = pd.DataFrame(senders, columns=['email'])
+        counts = df['email'].value_counts().reset_index()
+        counts.columns = ['email', 'count']
+        
+        # Sort: Count (Desc) -> Email (Asc)
+        counts = counts.sort_values(by=['count', 'email'], ascending=[False, True])
+        
+        result_data = counts.to_dict(orient='records')
+        
+        yield f"data: {json.dumps({'status': 'complete', 'data': result_data, 'log': 'Analysis Complete. Rendering table...', 'level': 'success'})}\n\n"
 
-    output = io.StringIO()
-    df.to_csv(output, index=False)
-    
-    return Response(
-        output.getvalue(),
-        mimetype="text/csv",
-        headers={"Content-disposition": "attachment; filename=keywords_report.csv"}
-    )
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
-@app.route("/logout")
-def logout():
-    session.clear()
-    return redirect(url_for("index"))
+@app.route('/api/get_labels')
+def get_labels():
+    service = get_service()
+    if not service: return jsonify([])
+    try:
+        results = service.users().labels().list(userId='me').execute()
+        labels = results.get('labels', [])
+        labels.sort(key=lambda x: x['name'].lower())
+        return jsonify(labels)
+    except:
+        return jsonify([])
 
-if __name__ == "__main__":
+@app.route('/api/apply_actions', methods=['POST'])
+def apply_actions():
+    actions = request.json 
+    def generate_updates():
+        service = get_service()
+        
+        def execute_with_retry(request_obj):
+            for attempt in range(4):
+                try:
+                    return request_obj.execute()
+                except Exception as e:
+                    time.sleep(1 + attempt)
+            raise Exception("Connection failed after retries")
+
+        yield json.dumps({"msg": "Starting to process actions..."}) + "\n"
+
+        for item in actions:
+            email = item['email']
+            action_type = item['action']
+            yield json.dumps({"msg": f"Processing: {email}..."}) + "\n"
+            time.sleep(0.5)
+
+            try:
+                if action_type == 'delete':
+                    yield json.dumps({"msg": "  - Moving emails to Trash..."}) + "\n"
+                    msgs = []
+                    list_req = service.users().messages().list(userId='me', q=f"from:{email}", maxResults=500)
+                    try:
+                        resp = execute_with_retry(list_req)
+                        msgs = resp.get('messages', [])
+                    except: pass 
+
+                    if msgs:
+                        all_ids = [m['id'] for m in msgs]
+                        total_trashed = 0
+                        CHUNK_SIZE = 25 
+                        for i in range(0, len(all_ids), CHUNK_SIZE):
+                            chunk_ids = all_ids[i:i + CHUNK_SIZE]
+                            try:
+                                execute_with_retry(service.users().messages().batchModify(
+                                    userId='me', body={'ids': chunk_ids, 'addLabelIds': ['TRASH']}
+                                ))
+                                total_trashed += len(chunk_ids)
+                                yield json.dumps({"msg": f"    ...trashed {total_trashed} so far..."}) + "\n"
+                            except:
+                                yield json.dumps({"msg": "    ...chunk failed, skipping..."}) + "\n"
+                        yield json.dumps({"msg": f"  - SUCCESS: Trashed {total_trashed} emails total."}) + "\n"
+                    else:
+                        yield json.dumps({"msg": "  - No emails found to delete."}) + "\n"
+
+                elif action_type == 'label':
+                    label_id = None
+                    if item.get('isNew'):
+                        label_name = item['labelName']
+                        if item.get('parentId') and 'parentName' in item:
+                             label_name = f"{item['parentName']}/{item['labelName']}"
+                        yield json.dumps({"msg": f"  - Creating Label: '{label_name}'..."}) + "\n"
+                        try:
+                            created = execute_with_retry(service.users().labels().create(userId='me', body={'name': label_name}))
+                            label_id = created['id']
+                            yield json.dumps({"msg": "  - Label created successfully."}) + "\n"
+                        except HttpError:
+                            yield json.dumps({"msg": f"  - Label likely exists. Fetching ID..."}) + "\n"
+                            try:
+                                resp = execute_with_retry(service.users().labels().list(userId='me'))
+                                lbls = resp.get('labels', [])
+                                existing = next((l for l in lbls if l['name'].lower() == label_name.lower()), None)
+                                if existing: label_id = existing['id']
+                            except: pass
+                    else:
+                        label_id = item['labelId']
+                        if 'labelName' in item:
+                             yield json.dumps({"msg": f"  - Applying Label: '{item['labelName']}'..."}) + "\n"
+
+                    if label_id:
+                        yield json.dumps({"msg": "  - Creating Filter (Skip Inbox)..."}) + "\n"
+                        filter_body = {
+                            'criteria': {'from': email},
+                            'action': {'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']} 
+                        }
+                        try:
+                            execute_with_retry(service.users().settings().filters().create(userId='me', body=filter_body))
+                            yield json.dumps({"msg": "  - Filter created."}) + "\n"
+                        except Exception as e: 
+                            yield json.dumps({"msg": f"  - Filter Warning: {str(e)}"}) + "\n"
+
+                        yield json.dumps({"msg": "  - Moving existing emails..."}) + "\n"
+                        msgs = []
+                        list_req = service.users().messages().list(userId='me', q=f"from:{email}", maxResults=500)
+                        try:
+                            resp = execute_with_retry(list_req)
+                            msgs = resp.get('messages', [])
+                        except: pass
+
+                        if msgs:
+                            all_ids = [m['id'] for m in msgs]
+                            total_moved = 0
+                            CHUNK_SIZE = 25
+                            for i in range(0, len(all_ids), CHUNK_SIZE):
+                                chunk_ids = all_ids[i:i + CHUNK_SIZE]
+                                batch_body = {'ids': chunk_ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}
+                                try:
+                                    execute_with_retry(service.users().messages().batchModify(userId='me', body=batch_body))
+                                    total_moved += len(chunk_ids)
+                                    yield json.dumps({"msg": f"    ...moved {total_moved} so far..."}) + "\n"
+                                except:
+                                    yield json.dumps({"msg": "    ...chunk failed, skipping..."}) + "\n"
+
+                            yield json.dumps({"msg": f"  - SUCCESS: Moved {total_moved} emails total."}) + "\n"
+                        else:
+                            yield json.dumps({"msg": "  - No existing emails to move."}) + "\n"
+            except Exception as e:
+                yield json.dumps({"msg": f"  - ERROR processing {email}: {str(e)}"}) + "\n"
+        
+        yield json.dumps({"msg": "ALL DONE. Reloading..."}) + "\n"
+        yield json.dumps({"status": "complete"}) + "\n"
+
+    return Response(stream_with_context(generate_updates()), mimetype='application/json')
+
+if __name__ == '__main__':
     app.run(debug=True, port=5000)

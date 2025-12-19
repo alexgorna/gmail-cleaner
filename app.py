@@ -37,7 +37,7 @@ def get_creds():
 def get_service():
     creds = get_creds()
     if not creds: return None
-    # 30s timeout to prevent hanging on slow requests
+    # 30s timeout to allow for slow page fetches
     http = httplib2.Http(timeout=30)
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
     return build('gmail', 'v1', http=authorized_http)
@@ -79,34 +79,33 @@ def scan_stream():
         
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...'})}\n\n"
         
-        # --- RETRY HELPER ---
-        # Returns the result if successful, or None if it fails 5 times
-        def fetch_with_retry(execute_method, is_batch=False):
-            attempts = 0
-            while attempts < 5:
-                try:
-                    result = execute_method()
-                    if is_batch: return True # Batch executes return None on success
-                    return result
-                except Exception as e:
-                    attempts += 1
-                    time.sleep(2 ** attempts) # Wait 2s, 4s, 8s...
-            return None
-
         # --- PHASE 1: LIST ALL MESSAGES ---
+        # We fetch the list of ID's first. 
+        # Robust Retry Logic: Try 5 times to fetch a page before giving up.
+        
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
         
         while request is not None:
-            # Retry fetching the list page so we don't crash
-            response = fetch_with_retry(request.execute, is_batch=False)
+            page_success = False
+            for attempt in range(5):
+                try:
+                    response = request.execute()
+                    messages.extend(response.get('messages', []))
+                    
+                    # Update UI
+                    yield f"data: {json.dumps({'status': 'counting', 'count': len(messages)})}\n\n"
+                    
+                    # Prepare next page
+                    request = service.users().messages().list_next(request, response)
+                    page_success = True
+                    break # Success! Exit retry loop
+                except Exception as e:
+                    # Wait and retry
+                    time.sleep(2 ** attempt)
             
-            if response is None:
-                yield f"data: {json.dumps({'error': 'Failed to fetch email list. Stopping.'})}\n\n"
+            if not page_success:
+                yield f"data: {json.dumps({'error': 'Network instability. Could not fetch full email list.'})}\n\n"
                 return
-                
-            messages.extend(response.get('messages', []))
-            yield f"data: {json.dumps({'status': 'counting', 'count': len(messages)})}\n\n"
-            request = service.users().messages().list_next(request, response)
 
         total_messages = len(messages)
         if total_messages == 0:
@@ -115,7 +114,7 @@ def scan_stream():
 
         # --- PHASE 2: FETCH SENDER DETAILS ---
         senders = []
-        batch_size = 25 # Keeping batch small for stability
+        batch_size = 25 # Small batch = higher stability
         
         for i in range(0, total_messages, batch_size):
             chunk = messages[i:i + batch_size]
@@ -126,22 +125,29 @@ def scan_stream():
                     headers = response['payload']['headers']
                     from_header = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
                     
-                    # Extract email inside <...> or use the whole string if no brackets
+                    # Regex to grab email inside brackets <...>
                     match = re.search(r'<(.+?)>', from_header)
                     clean_email = match.group(1) if match else from_header
                     
-                    # We strip() to remove hidden spaces, which might split counts
+                    # Clean up spaces just in case
                     senders.append(clean_email.strip())
 
             for msg in chunk:
                 batch.add(service.users().messages().get(userId='me', id=msg['id'], format='metadata', metadataHeaders=['From']), callback=batch_callback)
             
-            # CRITICAL FIX: We retry the batch if it fails.
-            # This ensures we don't "drop" 25 emails just because the network blinked.
-            success = fetch_with_retry(batch.execute, is_batch=True)
+            # --- STUBBORN RETRY FOR BATCHES ---
+            batch_success = False
+            for attempt in range(5):
+                try:
+                    batch.execute()
+                    batch_success = True
+                    break # Success!
+                except Exception as e:
+                    # If batch fails, wait and try again
+                    time.sleep(2 ** attempt)
             
-            if not success:
-                yield f"data: {json.dumps({'error': f'Failed to fetch details for batch {i}. Data may be incomplete.'})}\n\n"
+            if not batch_success:
+                yield f"data: {json.dumps({'error': f'Failed to fetch details for batch {i}. Skipped 25 emails.'})}\n\n"
 
             processed_count = min(i + batch_size, total_messages)
             progress_data = {
@@ -180,27 +186,14 @@ def apply_actions():
     def generate_updates():
         service = get_service()
         
-        def execute_request(request_obj):
-            retries = 0
-            max_retries = 3 
-            while retries < max_retries:
+        # Simple Retry Helper for Actions
+        def execute_with_retry(request_obj):
+            for attempt in range(4):
                 try:
-                    yield {'result': request_obj.execute()}
-                    return
-                except HttpError as e:
-                    if e.resp.status in [429, 500, 502, 503, 504] or (e.resp.status == 403 and "usageLimits" in str(e)):
-                        wait_time = (2 ** retries) + random.random()
-                        yield {'log': f"  - Google busy (HTTP {e.resp.status}). Retrying in {int(wait_time)}s..."}
-                        time.sleep(wait_time)
-                        retries += 1
-                        continue
-                    raise e
+                    return request_obj.execute()
                 except Exception as e:
-                    wait_time = 2 ** retries
-                    yield {'log': f"  - Network timeout ({type(e).__name__}). Retrying in {wait_time}s..."}
-                    time.sleep(wait_time)
-                    retries += 1
-            raise Exception("Max retries exceeded. Connection lost.")
+                    time.sleep(1 + attempt)
+            raise Exception("Connection failed after retries")
 
         yield json.dumps({"msg": "Starting to process actions..."}) + "\n"
 
@@ -215,9 +208,12 @@ def apply_actions():
                     yield json.dumps({"msg": "  - Moving emails to Trash..."}) + "\n"
                     msgs = []
                     list_req = service.users().messages().list(userId='me', q=f"from:{email}", maxResults=500)
-                    for output in execute_request(list_req):
-                        if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
-                        elif 'result' in output: msgs = output['result'].get('messages', [])
+                    
+                    # Execute Search
+                    try:
+                        resp = execute_with_retry(list_req)
+                        msgs = resp.get('messages', [])
+                    except: pass 
 
                     if msgs:
                         all_ids = [m['id'] for m in msgs]
@@ -225,12 +221,15 @@ def apply_actions():
                         CHUNK_SIZE = 25 
                         for i in range(0, len(all_ids), CHUNK_SIZE):
                             chunk_ids = all_ids[i:i + CHUNK_SIZE]
-                            for output in execute_request(service.users().messages().batchModify(
-                                userId='me', body={'ids': chunk_ids, 'addLabelIds': ['TRASH']}
-                            )):
-                                if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
-                            total_trashed += len(chunk_ids)
-                            yield json.dumps({"msg": f"    ...trashed {total_trashed} so far..."}) + "\n"
+                            try:
+                                execute_with_retry(service.users().messages().batchModify(
+                                    userId='me', body={'ids': chunk_ids, 'addLabelIds': ['TRASH']}
+                                ))
+                                total_trashed += len(chunk_ids)
+                                yield json.dumps({"msg": f"    ...trashed {total_trashed} so far..."}) + "\n"
+                            except:
+                                yield json.dumps({"msg": "    ...chunk failed, skipping..."}) + "\n"
+                        
                         yield json.dumps({"msg": f"  - SUCCESS: Trashed {total_trashed} emails total."}) + "\n"
                     else:
                         yield json.dumps({"msg": "  - No emails found to delete."}) + "\n"
@@ -243,20 +242,17 @@ def apply_actions():
                              label_name = f"{item['parentName']}/{item['labelName']}"
                         yield json.dumps({"msg": f"  - Creating Label: '{label_name}'..."}) + "\n"
                         try:
-                            created = None
-                            for output in execute_request(service.users().labels().create(userId='me', body={'name': label_name})):
-                                if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
-                                elif 'result' in output: created = output['result']
+                            created = execute_with_retry(service.users().labels().create(userId='me', body={'name': label_name}))
                             label_id = created['id']
                             yield json.dumps({"msg": "  - Label created successfully."}) + "\n"
                         except HttpError:
                             yield json.dumps({"msg": f"  - Label likely exists. Fetching ID..."}) + "\n"
-                            lbls = []
-                            for output in execute_request(service.users().labels().list(userId='me')):
-                                if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
-                                elif 'result' in output: lbls = output['result'].get('labels', [])
-                            existing = next((l for l in lbls if l['name'].lower() == label_name.lower()), None)
-                            if existing: label_id = existing['id']
+                            try:
+                                resp = execute_with_retry(service.users().labels().list(userId='me'))
+                                lbls = resp.get('labels', [])
+                                existing = next((l for l in lbls if l['name'].lower() == label_name.lower()), None)
+                                if existing: label_id = existing['id']
+                            except: pass
                     else:
                         label_id = item['labelId']
                         if 'labelName' in item:
@@ -269,8 +265,7 @@ def apply_actions():
                             'action': {'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']} 
                         }
                         try:
-                            for output in execute_request(service.users().settings().filters().create(userId='me', body=filter_body)):
-                                if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
+                            execute_with_retry(service.users().settings().filters().create(userId='me', body=filter_body))
                             yield json.dumps({"msg": "  - Filter created."}) + "\n"
                         except Exception as e: 
                             yield json.dumps({"msg": f"  - Filter Warning: {str(e)}"}) + "\n"
@@ -278,9 +273,10 @@ def apply_actions():
                         yield json.dumps({"msg": "  - Moving existing emails..."}) + "\n"
                         msgs = []
                         list_req = service.users().messages().list(userId='me', q=f"from:{email}", maxResults=500)
-                        for output in execute_request(list_req):
-                             if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
-                             elif 'result' in output: msgs = output['result'].get('messages', [])
+                        try:
+                            resp = execute_with_retry(list_req)
+                            msgs = resp.get('messages', [])
+                        except: pass
 
                         if msgs:
                             all_ids = [m['id'] for m in msgs]
@@ -289,10 +285,13 @@ def apply_actions():
                             for i in range(0, len(all_ids), CHUNK_SIZE):
                                 chunk_ids = all_ids[i:i + CHUNK_SIZE]
                                 batch_body = {'ids': chunk_ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}
-                                for output in execute_request(service.users().messages().batchModify(userId='me', body=batch_body)):
-                                    if 'log' in output: yield json.dumps({"msg": output['log']}) + "\n"
-                                total_moved += len(chunk_ids)
-                                yield json.dumps({"msg": f"    ...moved {total_moved} so far..."}) + "\n"
+                                try:
+                                    execute_with_retry(service.users().messages().batchModify(userId='me', body=batch_body))
+                                    total_moved += len(chunk_ids)
+                                    yield json.dumps({"msg": f"    ...moved {total_moved} so far..."}) + "\n"
+                                except:
+                                    yield json.dumps({"msg": "    ...chunk failed, skipping..."}) + "\n"
+
                             yield json.dumps({"msg": f"  - SUCCESS: Moved {total_moved} emails total."}) + "\n"
                         else:
                             yield json.dumps({"msg": "  - No existing emails to move."}) + "\n"

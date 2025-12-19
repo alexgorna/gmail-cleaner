@@ -37,6 +37,7 @@ def get_creds():
 def get_service():
     creds = get_creds()
     if not creds: return None
+    # 30s timeout
     http = httplib2.Http(timeout=30)
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
     return build('gmail', 'v1', http=authorized_http)
@@ -136,6 +137,7 @@ def scan_stream():
                           callback=batch_callback,
                           request_id=msg['id'])
             
+            # Execute Batch
             batch_success = False
             for attempt in range(5):
                 try:
@@ -149,9 +151,18 @@ def scan_stream():
             if not batch_success:
                  yield f"data: {json.dumps({'log': f'CRITICAL: Batch {current_batch_num} dropped completely.', 'level': 'error'})}\n\n"
 
+            # --- REPAIR LOOP WITH HEARTBEAT ---
             if batch_failures:
-                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} items failed. Retrying individually...', 'level': 'warn'})}\n\n"
+                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} items failed. Repairing...', 'level': 'warn'})}\n\n"
+                
+                count_repaired = 0
                 for failed_id in batch_failures:
+                    # NEW: Heartbeat yield to keep connection alive during slow repairs
+                    count_repaired += 1
+                    # Only log every 3rd repair to avoid spamming the UI, but send empty data to keep connection open
+                    if count_repaired % 2 == 0:
+                         yield f"data: {json.dumps({'log': f'  ...repairing item {count_repaired}/{len(batch_failures)} in batch {current_batch_num}...', 'level': 'info'})}\n\n"
+                    
                     retry_success = False
                     for retry_att in range(3):
                         try:
@@ -165,8 +176,10 @@ def scan_stream():
                             break
                         except Exception:
                             time.sleep(1)
+                    
                     if not retry_success:
                          yield f"data: {json.dumps({'log': f'Permanently failed to fetch message {failed_id}.', 'level': 'error'})}\n\n"
+            
             else:
                 yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed perfectly.'})}\n\n"
 
@@ -179,14 +192,12 @@ def scan_stream():
             }
             yield f"data: {json.dumps(progress_data)}\n\n"
 
-        # --- PHASE 3: AGGREGATE AND SORT ---
+        # --- PHASE 3: AGGREGATE ---
         df = pd.DataFrame(senders, columns=['email'])
         counts = df['email'].value_counts().reset_index()
         counts.columns = ['email', 'count']
         
-        # --- NEW SORTING LOGIC ---
-        # 1. Count (Descending)
-        # 2. Email (Ascending A-Z)
+        # Sort: Count (Desc) -> Email (Asc)
         counts = counts.sort_values(by=['count', 'email'], ascending=[False, True])
         
         result_data = counts.to_dict(orient='records')

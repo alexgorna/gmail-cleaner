@@ -23,7 +23,9 @@ CLIENT_SECRETS_FILE = "client_secret.json"
 SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/gmail.modify',
-    'https://www.googleapis.com/auth/gmail.settings.basic'
+    'https://www.googleapis.com/auth/gmail.settings.basic',
+    'https://www.googleapis.com/auth/userinfo.profile', # NEW: To get avatar
+    'https://www.googleapis.com/auth/userinfo.email'    # NEW: To get email address
 ]
 
 if os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'):
@@ -34,13 +36,12 @@ def get_creds():
     if 'credentials' not in session: return None
     return Credentials(**session['credentials'])
 
-def get_service():
+def get_service(service_name='gmail', version='v1'):
     creds = get_creds()
     if not creds: return None
-    # 30s timeout
     http = httplib2.Http(timeout=30)
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
-    return build('gmail', 'v1', http=authorized_http)
+    return build(service_name, version, http=authorized_http)
 
 @app.route('/')
 def index():
@@ -68,13 +69,28 @@ def callback():
     }
     return redirect(url_for('index'))
 
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('index'))
+
+@app.route('/api/user_info')
+def user_info():
+    service = get_service('oauth2', 'v2')
+    if not service: return jsonify({'error': 'Not logged in'}), 401
+    try:
+        user_info = service.userinfo().get().execute()
+        return jsonify(user_info)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/scan_stream')
 def scan_stream():
     if not get_creds(): 
         return Response("data: " + json.dumps({'error': 'Not logged in'}) + "\n\n", mimetype='text/event-stream')
 
     def generate():
-        service = get_service()
+        service = get_service() # Defaults to gmail v1
         messages = []
         
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...', 'log': 'Starting connection to Gmail API...'})}\n\n"
@@ -137,7 +153,6 @@ def scan_stream():
                           callback=batch_callback,
                           request_id=msg['id'])
             
-            # Execute Batch
             batch_success = False
             for attempt in range(5):
                 try:
@@ -151,15 +166,11 @@ def scan_stream():
             if not batch_success:
                  yield f"data: {json.dumps({'log': f'CRITICAL: Batch {current_batch_num} dropped completely.', 'level': 'error'})}\n\n"
 
-            # --- REPAIR LOOP WITH HEARTBEAT ---
             if batch_failures:
                 yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} items failed. Repairing...', 'level': 'warn'})}\n\n"
-                
                 count_repaired = 0
                 for failed_id in batch_failures:
-                    # NEW: Heartbeat yield to keep connection alive during slow repairs
                     count_repaired += 1
-                    # Only log every 3rd repair to avoid spamming the UI, but send empty data to keep connection open
                     if count_repaired % 2 == 0:
                          yield f"data: {json.dumps({'log': f'  ...repairing item {count_repaired}/{len(batch_failures)} in batch {current_batch_num}...', 'level': 'info'})}\n\n"
                     
@@ -176,10 +187,8 @@ def scan_stream():
                             break
                         except Exception:
                             time.sleep(1)
-                    
                     if not retry_success:
                          yield f"data: {json.dumps({'log': f'Permanently failed to fetch message {failed_id}.', 'level': 'error'})}\n\n"
-            
             else:
                 yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed perfectly.'})}\n\n"
 
@@ -196,12 +205,9 @@ def scan_stream():
         df = pd.DataFrame(senders, columns=['email'])
         counts = df['email'].value_counts().reset_index()
         counts.columns = ['email', 'count']
-        
-        # Sort: Count (Desc) -> Email (Asc)
         counts = counts.sort_values(by=['count', 'email'], ascending=[False, True])
         
         result_data = counts.to_dict(orient='records')
-        
         yield f"data: {json.dumps({'status': 'complete', 'data': result_data, 'log': 'Analysis Complete. Rendering table...', 'level': 'success'})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')

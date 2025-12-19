@@ -37,7 +37,6 @@ def get_creds():
 def get_service():
     creds = get_creds()
     if not creds: return None
-    # 30s timeout to allow for slow page fetches
     http = httplib2.Http(timeout=30)
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
     return build('gmail', 'v1', http=authorized_http)
@@ -79,12 +78,13 @@ def scan_stream():
         
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...'})}\n\n"
         
-        # --- PHASE 1: LIST ALL MESSAGES ---
-        # We fetch the list of ID's first. 
+        # --- PHASE 1: LIST MESSAGES ---
         # Robust Retry Logic: Try 5 times to fetch a page before giving up.
+        yield f"data: {json.dumps({'log': 'Fetching message ID list...', 'level': 'info'})}\n\n"
         
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
         
+        page_num = 1
         while request is not None:
             page_success = False
             for attempt in range(5):
@@ -92,29 +92,31 @@ def scan_stream():
                     response = request.execute()
                     messages.extend(response.get('messages', []))
                     
-                    # Update UI
                     yield f"data: {json.dumps({'status': 'counting', 'count': len(messages)})}\n\n"
                     
-                    # Prepare next page
                     request = service.users().messages().list_next(request, response)
                     page_success = True
-                    break # Success! Exit retry loop
+                    break 
                 except Exception as e:
-                    # Wait and retry
+                    yield f"data: {json.dumps({'log': f'List Page {page_num} failed: {str(e)}. Retrying ({attempt+1}/5)...', 'level': 'warn'})}\n\n"
                     time.sleep(2 ** attempt)
             
             if not page_success:
-                yield f"data: {json.dumps({'error': 'Network instability. Could not fetch full email list.'})}\n\n"
+                yield f"data: {json.dumps({'error': 'CRITICAL: Failed to fetch full email list after retries.'})}\n\n"
                 return
+            
+            page_num += 1
 
         total_messages = len(messages)
+        yield f"data: {json.dumps({'log': f'Found {total_messages} IDs. Fetching details...', 'level': 'success'})}\n\n"
+        
         if total_messages == 0:
             yield f"data: {json.dumps({'status': 'complete', 'data': []})}\n\n"
             return
 
-        # --- PHASE 2: FETCH SENDER DETAILS ---
+        # --- PHASE 2: FETCH DETAILS ---
         senders = []
-        batch_size = 25 # Small batch = higher stability
+        batch_size = 25 
         
         for i in range(0, total_messages, batch_size):
             chunk = messages[i:i + batch_size]
@@ -124,12 +126,8 @@ def scan_stream():
                 if exception is None:
                     headers = response['payload']['headers']
                     from_header = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
-                    
-                    # Regex to grab email inside brackets <...>
                     match = re.search(r'<(.+?)>', from_header)
                     clean_email = match.group(1) if match else from_header
-                    
-                    # Clean up spaces just in case
                     senders.append(clean_email.strip())
 
             for msg in chunk:
@@ -141,14 +139,15 @@ def scan_stream():
                 try:
                     batch.execute()
                     batch_success = True
-                    break # Success!
+                    # yield f"data: {json.dumps({'log': f'Batch {i//batch_size + 1} done.', 'level': 'info'})}\n\n"
+                    break 
                 except Exception as e:
-                    # If batch fails, wait and try again
+                    yield f"data: {json.dumps({'log': f'Batch {i//batch_size + 1} FAILED: {str(e)}. Retrying ({attempt+1}/5)...', 'level': 'error'})}\n\n"
                     time.sleep(2 ** attempt)
             
             if not batch_success:
-                yield f"data: {json.dumps({'error': f'Failed to fetch details for batch {i}. Skipped 25 emails.'})}\n\n"
-
+                yield f"data: {json.dumps({'log': f'SKIPPED Batch {i//batch_size + 1} after 5 failures!', 'level': 'error'})}\n\n"
+            
             processed_count = min(i + batch_size, total_messages)
             progress_data = {
                 'status': 'progress',
@@ -186,7 +185,6 @@ def apply_actions():
     def generate_updates():
         service = get_service()
         
-        # Simple Retry Helper for Actions
         def execute_with_retry(request_obj):
             for attempt in range(4):
                 try:
@@ -208,8 +206,6 @@ def apply_actions():
                     yield json.dumps({"msg": "  - Moving emails to Trash..."}) + "\n"
                     msgs = []
                     list_req = service.users().messages().list(userId='me', q=f"from:{email}", maxResults=500)
-                    
-                    # Execute Search
                     try:
                         resp = execute_with_retry(list_req)
                         msgs = resp.get('messages', [])
@@ -229,7 +225,6 @@ def apply_actions():
                                 yield json.dumps({"msg": f"    ...trashed {total_trashed} so far..."}) + "\n"
                             except:
                                 yield json.dumps({"msg": "    ...chunk failed, skipping..."}) + "\n"
-                        
                         yield json.dumps({"msg": f"  - SUCCESS: Trashed {total_trashed} emails total."}) + "\n"
                     else:
                         yield json.dumps({"msg": "  - No emails found to delete."}) + "\n"

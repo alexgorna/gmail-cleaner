@@ -7,20 +7,25 @@
     <style>
         .scrollable-table { max-height: 500px; overflow-y: auto; }
         .sticky-header th { position: sticky; top: 0; background-color: white; z-index: 1; }
-        #activity-log {
-            background-color: #f8f9fa;
-            border: 1px solid #dee2e6;
-            border-radius: 5px;
-            height: 200px;
+        
+        /* Debugger / Log Window Styles */
+        .console-window {
+            background-color: #1e1e1e;
+            color: #00ff00;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.85rem;
+            height: 150px;
             overflow-y: auto;
-            font-family: monospace;
-            font-size: 0.9rem;
+            border-radius: 5px;
             padding: 10px;
-            display: none;
+            margin-top: 10px;
+            display: none; /* Hidden by default */
+            border: 1px solid #444;
         }
-        .log-line { margin-bottom: 2px; }
+        .log-info { color: #cccccc; }
+        .log-success { color: #28a745; }
+        .log-warn { color: #ffc107; }
         .log-error { color: #dc3545; font-weight: bold; }
-        .log-warn { color: #fd7e14; font-weight: bold; }
     </style>
 </head>
 <body class="bg-light p-5">
@@ -36,6 +41,7 @@
         <div class="progress" style="height: 25px;">
             <div id="progress-bar-inner" class="progress-bar progress-bar-striped progress-bar-animated" style="width: 1%"></div>
         </div>
+        <div id="scan-debugger" class="console-window"></div>
     </div>
 
     <div id="error-alert" class="alert alert-danger" style="display:none;" role="alert"></div>
@@ -58,7 +64,7 @@
 
     <div id="activity-log-container" class="mt-4" style="display:none;">
         <h5>Activity Log</h5>
-        <div id="activity-log"></div>
+        <div id="activity-log" class="console-window" style="background-color: #f8f9fa; color: black; border: 1px solid #dee2e6;"></div>
     </div>
 
     <div class="mt-4 d-grid gap-2">
@@ -101,6 +107,16 @@
     const PAGE_SIZE = 50;
     let labelOptionsHTML = "";
 
+    function logToScanDebugger(msg, type='info') {
+        const consoleWin = document.getElementById('scan-debugger');
+        consoleWin.style.display = 'block';
+        const line = document.createElement('div');
+        line.className = `log-${type}`;
+        line.innerText = `> ${msg}`;
+        consoleWin.appendChild(line);
+        consoleWin.scrollTop = consoleWin.scrollHeight;
+    }
+
     window.onload = async function() {
         const labelRes = await fetch('/api/get_labels');
         existingLabels = await labelRes.json();
@@ -117,12 +133,30 @@
         const progressBar = document.getElementById('progress-bar-inner');
         const progressText = document.getElementById('progress-text');
         const progressPercent = document.getElementById('progress-percent');
+        
+        logToScanDebugger("Starting scan connection...", "info");
+
         evtSource.onmessage = function(event) {
             const data = JSON.parse(event.data);
-            if (data.error) { showError(data.error); evtSource.close(); return; }
-            if (data.status === 'init') { progressText.innerText = data.message; } 
-            else if (data.status === 'counting') { progressText.innerText = `Found ${data.count} emails...`; } 
-            else if (data.status === 'progress') {
+
+            // HANDLE LOG MESSAGES FROM BACKEND
+            if (data.log) {
+                logToScanDebugger(data.log, data.level || 'info');
+                return;
+            }
+
+            if (data.error) {
+                showError(data.error);
+                logToScanDebugger("FATAL ERROR: " + data.error, "error");
+                evtSource.close();
+                return;
+            }
+
+            if (data.status === 'init') {
+                progressText.innerText = data.message;
+            } else if (data.status === 'counting') {
+                progressText.innerText = `Found ${data.count} emails...`;
+            } else if (data.status === 'progress') {
                 const pct = data.percent + "%";
                 progressBar.style.width = pct;
                 progressPercent.innerText = pct;
@@ -130,15 +164,20 @@
             } else if (data.status === 'complete') {
                 progressBar.style.width = "100%";
                 progressText.innerText = "Scan Complete!";
-                setTimeout(() => document.getElementById('progress-container').style.display = 'none', 1000);
+                logToScanDebugger("Scan finished successfully.", "success");
+                
                 scannedData = data.data;
                 currentRenderIndex = 0;
                 document.getElementById('email-table-body').innerHTML = '';
                 loadMoreRows(); 
                 evtSource.close();
+                setTimeout(() => document.getElementById('progress-container').style.display = 'none', 3000); // Keep open a bit to read logs
             }
         };
-        evtSource.onerror = function() { evtSource.close(); };
+        evtSource.onerror = function() { 
+            logToScanDebugger("EventSource connection lost.", "error");
+            evtSource.close(); 
+        };
     }
 
     function loadMoreRows() {
@@ -172,7 +211,6 @@
         const alertBox = document.getElementById('error-alert');
         alertBox.innerText = msg;
         alertBox.style.display = 'block';
-        document.getElementById('progress-container').style.display = 'none';
     }
 
     function handleActionChange(selectElem) {
@@ -230,19 +268,6 @@
         logDiv.style.display = 'block';
         logDiv.innerHTML = '<div class="log-line">Starting...</div>';
 
-        // --- WATCHDOG TIMER ---
-        let lastUpdate = Date.now();
-        const watchdog = setInterval(() => {
-            if (Date.now() - lastUpdate > 20000) { // 20 seconds silence
-                clearInterval(watchdog);
-                const p = document.createElement('div');
-                p.className = 'log-line log-warn';
-                p.innerText = "⚠️ No response from server for 20s. The connection may have been lost. Please reload page.";
-                logDiv.appendChild(p);
-                logDiv.scrollTop = logDiv.scrollHeight;
-            }
-        }, 5000);
-
         try {
             const response = await fetch('/api/apply_actions', {
                 method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(actions)
@@ -251,7 +276,6 @@
             const decoder = new TextDecoder();
             while (true) {
                 const { done, value } = await reader.read();
-                lastUpdate = Date.now(); // Reset watchdog
                 if (done) break;
                 const lines = decoder.decode(value).split('\n');
                 for (const line of lines) {
@@ -259,7 +283,6 @@
                     try {
                         const jsonLog = JSON.parse(line);
                         if (jsonLog.status === 'complete') {
-                            clearInterval(watchdog);
                             setTimeout(() => window.location.reload(), 2000);
                         } else if (jsonLog.msg) {
                             const p = document.createElement('div');
@@ -274,7 +297,6 @@
                 }
             }
         } catch (err) {
-            clearInterval(watchdog);
             logDiv.innerHTML += `<div class="log-line log-error">Connection Error: ${err.message}</div>`;
             document.getElementById('apply-btn').disabled = false;
         }

@@ -38,16 +38,9 @@ def get_service():
     """Creates a service with a ROBUST timeout."""
     creds = get_creds()
     if not creds: return None
-    
-    # 1. Create the base HTTP object with the 30s TIMEOUT
+    # 30s timeout to allow for slow page fetches
     http = httplib2.Http(timeout=30)
-    
-    # 2. Wrap it with Credentials (Authorizes it)
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
-    
-    # 3. Build the service
-    # FIX: Removed 'requestBuilder' argument which caused the crash.
-    # We simply pass the authorized_http object, and Google handles the rest.
     return build('gmail', 'v1', http=authorized_http)
 
 @app.route('/')
@@ -87,45 +80,44 @@ def scan_stream():
         
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...'})}\n\n"
         
-        # --- CONNECTION RETRY LOOP ---
-        request = None
-        connect_attempts = 0
-        last_error = ""
-        
-        while connect_attempts < 3:
-            try:
-                request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
-                request.execute() # Test connection
-                request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
-                break
-            except Exception as e:
-                last_error = str(e)
-                connect_attempts += 1
-                yield f"data: {json.dumps({'status': 'init', 'message': f'Connection unstable. Retrying ({connect_attempts}/3)...'})}\n\n"
-                time.sleep(2)
-        
-        if connect_attempts >= 3:
-            yield f"data: {json.dumps({'error': f'Connection Failed: {last_error}'})}\n\n"
-            return
-
-        # --- MAIN SCAN LOOP ---
-        try:
-            while request is not None:
+        # --- HELPER: Retry Logic for Scanning ---
+        def fetch_with_retry(request_obj):
+            attempts = 0
+            while attempts < 5: # Try 5 times
                 try:
-                    response = request.execute()
-                    messages.extend(response.get('messages', []))
-                    request = service.users().messages().list_next(request, response)
-                    yield f"data: {json.dumps({'status': 'counting', 'count': len(messages)})}\n\n"
-                except Exception:
-                    break
-        except Exception as e:
-             pass 
+                    return request_obj.execute()
+                except Exception as e:
+                    attempts += 1
+                    time.sleep(attempts * 1.5) # Linear backoff
+            return None # Failed after 5 attempts
+
+        # --- PHASE 1: LIST MESSAGES ---
+        # We start the initial request
+        request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
+        
+        while request is not None:
+            # Use the retry helper so we don't crash on a single bad page
+            response = fetch_with_retry(request)
+            
+            if response is None:
+                # If a page fails 5 times, we must stop, but we tell the user why
+                yield f"data: {json.dumps({'error': 'Scan timed out. Results may be incomplete.'})}\n\n"
+                break
+                
+            messages.extend(response.get('messages', []))
+            
+            # Send update to UI
+            yield f"data: {json.dumps({'status': 'counting', 'count': len(messages)})}\n\n"
+            
+            # Prepare next page
+            request = service.users().messages().list_next(request, response)
 
         total_messages = len(messages)
         if total_messages == 0:
             yield f"data: {json.dumps({'status': 'complete', 'data': []})}\n\n"
             return
 
+        # --- PHASE 2: FETCH DETAILS (CHUNKING) ---
         senders = []
         batch_size = 50
         
@@ -147,7 +139,7 @@ def scan_stream():
             try:
                 batch.execute()
             except Exception:
-                pass
+                pass # Batches might fail partially, but we keep going
 
             processed_count = min(i + batch_size, total_messages)
             progress_data = {
@@ -158,6 +150,7 @@ def scan_stream():
             }
             yield f"data: {json.dumps(progress_data)}\n\n"
 
+        # --- PHASE 3: AGGREGATE ---
         df = pd.DataFrame(senders, columns=['email'])
         counts = df['email'].value_counts().reset_index()
         counts.columns = ['email', 'count']

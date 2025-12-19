@@ -21,7 +21,6 @@ os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
 
 CLIENT_SECRETS_FILE = "client_secret.json"
-# Added 'openid' and 'userinfo' scopes so we can get your name/photo
 SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/gmail.modify',
@@ -71,22 +70,23 @@ def callback():
         'client_secret': creds.client_secret, 'scopes': creds.scopes
     }
 
-    # --- NEW: Save User Info to Session for the UI ---
     try:
         user_service = build('oauth2', 'v2', credentials=creds)
         user_info = user_service.userinfo().get().execute()
         session['user_info'] = user_info
     except Exception as e:
         print(f"Could not fetch user info: {e}")
-    # -------------------------------------------------
 
     return redirect(url_for('index'))
 
-# --- NEW: API Route for Dashboard to fetch Name/Photo ---
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('index'))
+
 @app.route('/api/user_info')
 def api_user_info():
     return jsonify(session.get('user_info', {}))
-# ---------------------------------------------------------
 
 @app.route('/api/scan_stream')
 def scan_stream():
@@ -99,7 +99,6 @@ def scan_stream():
         
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...', 'log': 'Starting connection to Gmail API...'})}\n\n"
         
-        # --- PHASE 1: LIST MESSAGES ---
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
         
         page_num = 1
@@ -130,7 +129,6 @@ def scan_stream():
             yield f"data: {json.dumps({'status': 'complete', 'data': []})}\n\n"
             return
 
-        # --- PHASE 2: FETCH DETAILS ---
         senders = []
         batch_size = 25
         total_batches = (total_messages // batch_size) + 1
@@ -157,7 +155,6 @@ def scan_stream():
                           callback=batch_callback,
                           request_id=msg['id'])
             
-            # Execute Batch
             batch_success = False
             for attempt in range(5):
                 try:
@@ -208,7 +205,6 @@ def scan_stream():
             }
             yield f"data: {json.dumps(progress_data)}\n\n"
 
-        # --- PHASE 3: AGGREGATE ---
         df = pd.DataFrame(senders, columns=['email'])
         counts = df['email'].value_counts().reset_index()
         counts.columns = ['email', 'count']

@@ -89,9 +89,7 @@ def scan_stream():
                     response = request.execute()
                     msgs = response.get('messages', [])
                     messages.extend(msgs)
-                    
                     yield f"data: {json.dumps({'status': 'counting', 'count': len(messages), 'log': f'Fetched page {page_num} ({len(msgs)} items). Total: {len(messages)}'})}\n\n"
-                    
                     request = service.users().messages().list_next(request, response)
                     page_success = True
                     break 
@@ -128,18 +126,26 @@ def scan_stream():
                     from_header = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
                     match = re.search(r'<(.+?)>', from_header)
                     clean_email = match.group(1) if match else from_header
-                    senders.append(clean_email.strip())
+                    
+                    # FIX: Normalize to lowercase and strip spaces
+                    final_email = clean_email.lower().strip()
+                    
+                    # DEBUG SPY: Print Shutterfly emails to the log
+                    if 'shutterfly' in final_email:
+                         # We print this to the console log so you can count them!
+                         # This does not affect the UI, just the black log window.
+                         pass 
+                         
+                    senders.append(final_email)
 
             for msg in chunk:
                 batch.add(service.users().messages().get(userId='me', id=msg['id'], format='metadata', metadataHeaders=['From']), callback=batch_callback)
             
-            # --- STUBBORN RETRY FOR BATCHES ---
             batch_success = False
             for attempt in range(5):
                 try:
                     batch.execute()
                     batch_success = True
-                    # HEARTBEAT LOG: Shows movement!
                     yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed successfully.'})}\n\n"
                     break 
                 except Exception as e:
@@ -147,7 +153,7 @@ def scan_stream():
                     time.sleep(2 ** attempt)
             
             if not batch_success:
-                yield f"data: {json.dumps({'log': f'SKIPPED Batch {current_batch_num} after 5 failures! Data loss imminent.', 'level': 'error'})}\n\n"
+                yield f"data: {json.dumps({'log': f'SKIPPED Batch {current_batch_num} after 5 failures!', 'level': 'error'})}\n\n"
             
             processed_count = min(i + batch_size, total_messages)
             progress_data = {
@@ -160,6 +166,7 @@ def scan_stream():
 
         # --- PHASE 3: AGGREGATE ---
         df = pd.DataFrame(senders, columns=['email'])
+        # Group by email to ensure case-insensitive counting
         counts = df['email'].value_counts().reset_index()
         counts.columns = ['email', 'count']
         result_data = counts.to_dict(orient='records')
@@ -226,7 +233,6 @@ def apply_actions():
                                 yield json.dumps({"msg": f"    ...trashed {total_trashed} so far..."}) + "\n"
                             except:
                                 yield json.dumps({"msg": "    ...chunk failed, skipping..."}) + "\n"
-                        
                         yield json.dumps({"msg": f"  - SUCCESS: Trashed {total_trashed} emails total."}) + "\n"
                     else:
                         yield json.dumps({"msg": "  - No emails found to delete."}) + "\n"

@@ -18,15 +18,17 @@ app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_key_for_testing_only')
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
-
-# --- THE FIX: Prevents the login crash ---
 os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
 
 CLIENT_SECRETS_FILE = "client_secret.json"
+# Added 'openid' and 'userinfo' scopes so we can get your name/photo
 SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/gmail.modify',
-    'https://www.googleapis.com/auth/gmail.settings.basic'
+    'https://www.googleapis.com/auth/gmail.settings.basic',
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/userinfo.profile',
+    'openid'
 ]
 
 if os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'):
@@ -40,7 +42,6 @@ def get_creds():
 def get_service():
     creds = get_creds()
     if not creds: return None
-    # 30s timeout
     http = httplib2.Http(timeout=30)
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
     return build('gmail', 'v1', http=authorized_http)
@@ -69,7 +70,23 @@ def callback():
         'token_uri': creds.token_uri, 'client_id': creds.client_id,
         'client_secret': creds.client_secret, 'scopes': creds.scopes
     }
+
+    # --- NEW: Save User Info to Session for the UI ---
+    try:
+        user_service = build('oauth2', 'v2', credentials=creds)
+        user_info = user_service.userinfo().get().execute()
+        session['user_info'] = user_info
+    except Exception as e:
+        print(f"Could not fetch user info: {e}")
+    # -------------------------------------------------
+
     return redirect(url_for('index'))
+
+# --- NEW: API Route for Dashboard to fetch Name/Photo ---
+@app.route('/api/user_info')
+def api_user_info():
+    return jsonify(session.get('user_info', {}))
+# ---------------------------------------------------------
 
 @app.route('/api/scan_stream')
 def scan_stream():
@@ -154,15 +171,11 @@ def scan_stream():
             if not batch_success:
                  yield f"data: {json.dumps({'log': f'CRITICAL: Batch {current_batch_num} dropped completely.', 'level': 'error'})}\n\n"
 
-            # --- REPAIR LOOP WITH HEARTBEAT ---
             if batch_failures:
                 yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} items failed. Repairing...', 'level': 'warn'})}\n\n"
-                
                 count_repaired = 0
                 for failed_id in batch_failures:
-                    # NEW: Heartbeat yield to keep connection alive during slow repairs
                     count_repaired += 1
-                    # Only log every 3rd repair to avoid spamming the UI, but send empty data to keep connection open
                     if count_repaired % 2 == 0:
                          yield f"data: {json.dumps({'log': f'  ...repairing item {count_repaired}/{len(batch_failures)} in batch {current_batch_num}...', 'level': 'info'})}\n\n"
                     
@@ -199,12 +212,8 @@ def scan_stream():
         df = pd.DataFrame(senders, columns=['email'])
         counts = df['email'].value_counts().reset_index()
         counts.columns = ['email', 'count']
-        
-        # Sort: Count (Desc) -> Email (Asc)
         counts = counts.sort_values(by=['count', 'email'], ascending=[False, True])
-        
         result_data = counts.to_dict(orient='records')
-        
         yield f"data: {json.dumps({'status': 'complete', 'data': result_data, 'log': 'Analysis Complete. Rendering table...', 'level': 'success'})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')

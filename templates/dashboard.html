@@ -22,7 +22,7 @@
         /* Hero Section */
         .hero-section {
             background: linear-gradient(135deg, var(--hero-gradient-start) 0%, var(--hero-gradient-end) 100%);
-            padding: 60px 20px 80px 20px; /* Extra bottom padding for overlap */
+            padding: 60px 20px 80px 20px;
             text-align: center;
             border-bottom: 1px solid #dbeafe;
         }
@@ -31,7 +31,7 @@
         
         /* Main Card */
         .dashboard-container {
-            margin-top: -50px; /* Overlap effect */
+            margin-top: -50px;
             padding: 0 20px;
             margin-bottom: 50px;
         }
@@ -52,7 +52,7 @@
         .search-input-group input { padding-left: 40px; border-radius: 50px; background-color: #f8fafc; border: 1px solid #e2e8f0; height: 45px; }
         .search-input-group input:focus { background-color: #fff; box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.15); border-color: var(--accent-color); }
         
-        /* Bulk Actions Group (Matches Screenshot style) */
+        /* Bulk Actions Group */
         .bulk-actions-group { display: none; align-items: center; gap: 12px; animation: fadeIn 0.2s ease; }
         .btn-bulk-delete { border-color: #dc3545; color: #dc3545; border-radius: 20px; background: white; padding: 8px 16px; font-weight: 500; font-size: 0.9rem; }
         .btn-bulk-delete:hover { background-color: #dc3545; color: white; }
@@ -70,6 +70,11 @@
             font-size: 0.85rem; font-weight: 600; display: inline-block; min-width: 40px; text-align: center;
         }
 
+        /* Processed Row Style (The Fix) */
+        .row-processed { opacity: 0.5; background-color: #f8f9fa; pointer-events: none; }
+        .row-processed .email-text { text-decoration: line-through; color: #999; }
+        .row-processed .action-select { background-color: #e9ecef; border-color: #dee2e6; color: #6c757d; }
+        
         /* Action Select */
         .action-select {
             border-radius: 20px; border: 1px solid #cbd5e1; background-color: #fff; 
@@ -140,7 +145,6 @@
             <div class="controls-wrapper d-flex justify-content-between align-items-center">
                 
                 <div id="left-controls-area" class="d-flex align-items-center flex-grow-1 me-3">
-                    
                     <div id="search-container" class="search-input-group">
                         <i class="bi bi-search"></i>
                         <input type="text" id="searchInput" placeholder="Search senders..." onkeyup="handleSearch()">
@@ -148,20 +152,16 @@
 
                     <div id="bulk-actions-container" class="bulk-actions-group">
                         <span id="selection-count" class="text-primary fw-bold small me-2">0 Selected</span>
-                        
                         <button class="btn btn-bulk-delete" onclick="applyBulkRowAction('delete')">
                             <i class="bi bi-trash me-1"></i> Delete Selected
                         </button>
-                        
                         <div class="dropdown">
                             <button class="btn btn-bulk-label dropdown-toggle" type="button" data-bs-toggle="dropdown">
                                 <i class="bi bi-folder me-1"></i> Label Selected
                             </button>
-                            <ul class="dropdown-menu shadow border-0" id="bulk-label-dropdown">
-                                </ul>
+                            <ul class="dropdown-menu shadow border-0" id="bulk-label-dropdown"></ul>
                         </div>
                     </div>
-
                 </div>
                 
                 <div class="action-buttons d-flex align-items-center">
@@ -260,19 +260,15 @@
     let labelOptionsHTML = "";
     let currentEditingRowEmail = null;
 
-    // --- INIT ---
     window.onload = async function() {
         fetchUserInfo();
         try {
             const labelRes = await fetch('/api/get_labels');
             existingLabels = await labelRes.json();
             labelOptionsHTML = existingLabels.filter(l => l.type === 'user').map(l => `<option value="label:${l.id}">${l.name}</option>`).join('');
-            
-            // Populate Dropdowns
             populateParentLabelSelect();
             populateBulkDropdown(); 
         } catch(e) { console.log("Label fetch error", e); }
-        
         startScanStream();
     };
 
@@ -286,11 +282,9 @@
         } catch(e) { console.error("User info fetch failed", e); }
     }
 
-    // --- TABLE LOGIC ---
     function renderTable() {
         const tbody = document.getElementById('email-table-body');
         tbody.innerHTML = '';
-        
         const start = (currentPage - 1) * rowsPerPage;
         const end = start + rowsPerPage;
         const pageData = filteredData.slice(start, end);
@@ -303,16 +297,30 @@
 
         pageData.forEach(row => {
             const tr = document.createElement('tr');
-            // Check if action already pending to set dropdown state
-            const pending = pendingActions[row.email];
+            
+            // Logic for Processed vs Pending rows
             let selectedValue = 'none';
-            if (pending) {
+            let rowClass = '';
+            let isDisabled = false;
+
+            if (row.processedAction) {
+                // If it was already processed, grey it out and lock the value
+                selectedValue = row.processedAction;
+                rowClass = 'row-processed';
+                isDisabled = true;
+            } else if (pendingActions[row.email]) {
+                // If currently pending (selected by user but not applied)
+                const pending = pendingActions[row.email];
                 if (pending.action === 'delete') selectedValue = 'delete';
                 else if (pending.action === 'label') selectedValue = `label:${pending.labelId}`;
             }
 
+            if(rowClass) tr.className = rowClass;
+
             tr.innerHTML = `
-                <td style="padding-left: 24px;"><input type="checkbox" class="form-check-input row-checkbox" onchange="updateSelection()"></td>
+                <td style="padding-left: 24px;">
+                    <input type="checkbox" class="form-check-input row-checkbox" onchange="updateSelection()" ${isDisabled ? 'disabled' : ''}>
+                </td>
                 <td class="email-text">${row.email}</td>
                 <td class="text-center"><span class="count-badge">${row.count}</span></td>
                 <td class="text-end pe-4">
@@ -326,7 +334,7 @@
                     </select>
                 </td>
             `;
-            // Set value after creating to ensure correct state
+            
             const select = tr.querySelector('select');
             select.value = selectedValue;
             
@@ -335,6 +343,9 @@
 
         document.getElementById('page-info').innerText = `${start + 1}-${Math.min(end, filteredData.length)} of ${filteredData.length}`;
         document.getElementById('pagination-controls').style.setProperty('display', 'flex', 'important');
+        
+        // After rendering, update selection count (to handle disabled rows)
+        updateSelection();
     }
 
     function changeRowsPerPage() {
@@ -342,16 +353,11 @@
         currentPage = 1;
         renderTable();
     }
-
     function changePage(delta) {
         const maxPage = Math.ceil(filteredData.length / rowsPerPage);
         const newPage = currentPage + delta;
-        if (newPage >= 1 && newPage <= maxPage) {
-            currentPage = newPage;
-            renderTable();
-        }
+        if (newPage >= 1 && newPage <= maxPage) { currentPage = newPage; renderTable(); }
     }
-
     function handleSearch() {
         const term = document.getElementById('searchInput').value.toLowerCase();
         filteredData = allData.filter(row => row.email.includes(term));
@@ -361,7 +367,7 @@
 
     function toggleSelectAll() {
         const checked = document.getElementById('selectAll').checked;
-        document.querySelectorAll('.row-checkbox').forEach(cb => cb.checked = checked);
+        document.querySelectorAll('.row-checkbox:not(:disabled)').forEach(cb => cb.checked = checked);
         updateSelection();
     }
 
@@ -381,7 +387,6 @@
         }
     }
 
-    // --- BULK ACTION LOGIC ---
     function populateBulkDropdown() {
         const ul = document.getElementById('bulk-label-dropdown');
         ul.innerHTML = existingLabels.filter(l => l.type === 'user').map(l => 
@@ -401,9 +406,7 @@
 
     function downloadCSV() {
         let csvContent = "data:text/csv;charset=utf-8,Sender Email,Count\n";
-        filteredData.forEach(row => {
-            csvContent += `${row.email},${row.count}\n`;
-        });
+        filteredData.forEach(row => { csvContent += `${row.email},${row.count}\n`; });
         const link = document.createElement("a");
         link.setAttribute("href", encodeURI(csvContent));
         link.setAttribute("download", "inbox_analysis.csv");
@@ -416,7 +419,6 @@
         const logWin = document.getElementById('scan-debugger');
         logWin.style.display = (logWin.style.display === 'none' || logWin.style.display === '') ? 'block' : 'none';
     }
-
     function logToScanDebugger(msg, type='info') {
         const consoleWin = document.getElementById('scan-debugger');
         const line = document.createElement('div');
@@ -426,7 +428,6 @@
         consoleWin.scrollTop = consoleWin.scrollHeight;
     }
 
-    // --- STREAMING LOGIC ---
     function startScanStream() {
         const evtSource = new EventSource("/api/scan_stream");
         const progressBar = document.getElementById('progress-bar-inner');
@@ -448,14 +449,8 @@
             } else if (data.status === 'complete') {
                 allData = data.data;
                 const totalEmails = allData.reduce((sum, item) => sum + item.count, 0);
-                
                 const heroContent = document.getElementById('hero-status-content');
-                heroContent.innerHTML = `
-                    <h1 class="hero-title" style="margin-top: 10px;">
-                        You have <span class="hero-count">${totalEmails} emails</span> in your inbox.
-                    </h1>
-                `;
-                
+                heroContent.innerHTML = `<h1 class="hero-title" style="margin-top: 10px;">You have <span class="hero-count">${totalEmails} emails</span> in your inbox.</h1>`;
                 filteredData = allData;
                 renderTable();
                 evtSource.close();
@@ -464,7 +459,6 @@
         evtSource.onerror = function() { evtSource.close(); };
     }
 
-    // --- ACTION LOGIC ---
     function handleActionChange(selectElem) {
         const val = selectElem.value;
         const email = selectElem.dataset.email;
@@ -511,7 +505,6 @@
     async function applyChanges() {
         const selects = document.querySelectorAll('.action-select');
         const actions = [];
-        
         for (const [email, actionData] of Object.entries(pendingActions)) {
             actions.push({ email: email, ...actionData });
         }
@@ -539,8 +532,25 @@
                     try {
                         const jsonLog = JSON.parse(line);
                         if (jsonLog.status === 'complete') {
-                            logToScanDebugger("Actions complete. Reloading...", "success");
-                            setTimeout(() => window.location.reload(), 2000);
+                            logToScanDebugger("Actions complete.", "success");
+                            
+                            // --- SUCCESS HANDLING (No Reload) ---
+                            // 1. Mark rows as processed in data model
+                            actions.forEach(act => {
+                                const item = allData.find(d => d.email === act.email);
+                                if(item) {
+                                    item.processedAction = (act.action === 'delete') ? 'delete' : `label:${act.labelId}`;
+                                    delete pendingActions[act.email];
+                                }
+                            });
+                            
+                            // 2. Re-render table to show greyed out state
+                            renderTable();
+                            
+                            // 3. Reset Button State
+                            btn.disabled = false;
+                            btn.innerText = "Apply Actions";
+                            
                         } else if (jsonLog.msg) {
                             logToScanDebugger(jsonLog.msg, jsonLog.msg.includes("ERROR") ? 'error' : 'info');
                         }

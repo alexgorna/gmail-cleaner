@@ -98,7 +98,7 @@ def scan_stream():
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...', 'log': 'Starting connection to Gmail API...'})}\n\n"
         
         # --- PHASE 1: LIST MESSAGES ---
-        # We fetch 500 at a time to be safe
+        # Fetching list is usually fast, so 500 is fine here
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
         
         page_num = 1
@@ -132,8 +132,10 @@ def scan_stream():
         # --- PHASE 2: FETCH DETAILS ---
         senders = []
         
-        # FIX 1: Reduced Batch Size from 25 -> 10 to avoid "Too many concurrent requests"
-        batch_size = 10
+        # PERFORMANCE TUNING:
+        # Batch Size: 18 (Safe under the ~25 concurrent limit)
+        # Sleep: 0.2s (Fast enough, but polite enough to avoid 429 errors)
+        batch_size = 18 
         total_batches = (total_messages // batch_size) + 1
         
         for i in range(0, total_messages, batch_size):
@@ -177,13 +179,12 @@ def scan_stream():
             # --- REPAIR LOOP ---
             if batch_failures:
                 err_snippet = first_error_msg if first_error_msg else "Unknown Error"
-                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} items hit rate limit. Slowing down & repairing...', 'level': 'warn'})}\n\n"
+                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} items hit rate limit. Repairing...', 'level': 'warn'})}\n\n"
                 
                 count_repaired = 0
                 for failed_id in batch_failures:
                     count_repaired += 1
-                    # Extra sleep during repairs to be super gentle
-                    time.sleep(0.5) 
+                    time.sleep(0.3) # Gentle sleep during repairs
                     
                     retry_success = False
                     for retry_att in range(3):
@@ -219,8 +220,8 @@ def scan_stream():
             }
             yield f"data: {json.dumps(progress_data)}\n\n"
             
-            # FIX 2: Increased sleep between batches from 0.1s -> 1.0s
-            time.sleep(1.0)
+            # THE SPEED FIX: Reduced from 1.0s to 0.2s
+            time.sleep(0.2)
 
         # --- PHASE 3: AGGREGATE ---
         df = pd.DataFrame(senders, columns=['email'])
@@ -267,7 +268,7 @@ def apply_actions():
             email = item['email']
             action_type = item['action']
             yield json.dumps({"msg": f"Processing: {email}..."}) + "\n"
-            time.sleep(0.5)
+            time.sleep(0.2) # Faster actions too
 
             try:
                 if action_type == 'delete':
@@ -282,7 +283,7 @@ def apply_actions():
                     if msgs:
                         all_ids = [m['id'] for m in msgs]
                         total_trashed = 0
-                        CHUNK_SIZE = 10  # Reduced this too just in case
+                        CHUNK_SIZE = 18 
                         for i in range(0, len(all_ids), CHUNK_SIZE):
                             chunk_ids = all_ids[i:i + CHUNK_SIZE]
                             try:
@@ -291,7 +292,7 @@ def apply_actions():
                                 ))
                                 total_trashed += len(chunk_ids)
                                 yield json.dumps({"msg": f"    ...trashed {total_trashed} so far..."}) + "\n"
-                                time.sleep(0.5) # Added throttle here too
+                                time.sleep(0.2) 
                             except:
                                 yield json.dumps({"msg": "    ...chunk failed, skipping..."}) + "\n"
                         yield json.dumps({"msg": f"  - SUCCESS: Trashed {total_trashed} emails total."}) + "\n"
@@ -345,7 +346,7 @@ def apply_actions():
                         if msgs:
                             all_ids = [m['id'] for m in msgs]
                             total_moved = 0
-                            CHUNK_SIZE = 10 # Reduced for safety
+                            CHUNK_SIZE = 18
                             for i in range(0, len(all_ids), CHUNK_SIZE):
                                 chunk_ids = all_ids[i:i + CHUNK_SIZE]
                                 batch_body = {'ids': chunk_ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}
@@ -353,7 +354,7 @@ def apply_actions():
                                     execute_with_retry(service.users().messages().batchModify(userId='me', body=batch_body))
                                     total_moved += len(chunk_ids)
                                     yield json.dumps({"msg": f"    ...moved {total_moved} so far..."}) + "\n"
-                                    time.sleep(0.5) # Added throttle
+                                    time.sleep(0.2) 
                                 except:
                                     yield json.dumps({"msg": "    ...chunk failed, skipping..."}) + "\n"
 

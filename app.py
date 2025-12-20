@@ -137,7 +137,6 @@ def get_labels():
         return jsonify(labels)
     except: return jsonify([])
 
-# --- NEW ENDPOINT: CREATE LABEL IMMEDIATELY ---
 @app.route('/api/create_label', methods=['POST'])
 def create_label():
     service = get_service()
@@ -157,7 +156,8 @@ def create_label():
         created = service.users().labels().create(userId='me', body=label_object).execute()
         return jsonify(created)
     except HttpError as error:
-        if error.resp.status == 409: # Already exists
+        # If exists, return the existing one so the UI can proceed
+        if error.resp.status == 409:
             try:
                 results = service.users().labels().list(userId='me').execute()
                 for l in results.get('labels', []):
@@ -276,18 +276,30 @@ def apply_actions():
 
             try:
                 if action_type == 'delete':
-                    # ... delete logic (omitted for brevity, same as before) ...
+                    msgs = []
+                    token = None
+                    while True:
+                        res = execute_with_retry(service.users().messages().list(userId='me', q=f"from:{email}", maxResults=MAX_MESSAGES_PER_PAGE, pageToken=token))
+                        msgs.extend(res.get('messages', []))
+                        token = res.get('nextPageToken')
+                        if not token: break
+                    
+                    if msgs:
+                        all_ids = [m['id'] for m in msgs]
+                        for i in range(0, len(all_ids), BATCH_SIZE):
+                            ids = all_ids[i:i + BATCH_SIZE]
+                            try: execute_with_retry(service.users().messages().batchModify(userId='me', body={'ids': ids, 'addLabelIds': ['TRASH']}))
+                            except: pass
+                            time.sleep(BATCH_SLEEP_SECONDS)
                     yield json.dumps({"msg": "  - Emails deleted."}) + "\n"
 
                 elif action_type == 'label':
                     label_id = item['labelId']
                     
-                    # Create Filter
                     filter_body = {'criteria': {'from': email}, 'action': {'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}}
                     try: execute_with_retry(service.users().settings().filters().create(userId='me', body=filter_body))
                     except: pass
 
-                    # Move existing emails
                     msgs = []
                     token = None
                     while True:

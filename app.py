@@ -27,7 +27,7 @@ BATCH_SIZE = 18
 BATCH_SLEEP_SECONDS = 0.2    
 MAX_RETRIES = 5              
 MAX_MESSAGES_PER_PAGE = 500  
-MAX_INBOX_SCAN_LIMIT = 5000  # Hard limit to prevent timeout/memory crashes
+MAX_INBOX_SCAN_LIMIT = 5000  
 
 # OAuth Security Risk - Only enable insecure transport in dev
 if os.environ.get('ENVIRONMENT') != 'production':
@@ -46,7 +46,7 @@ else:
 
 Session(app)
 
-# FIX 1: Initialize CSRF but exempt specific endpoints
+# Initialize CSRF but exempt specific endpoints
 csrf = CSRFProtect(app)
 
 CLIENT_SECRETS_FILE = "client_secret.json"
@@ -187,7 +187,6 @@ def scan_stream():
                     messages.extend(msgs)
                     yield f"data: {json.dumps({'status': 'counting', 'count': len(messages), 'log': f'Fetched page {page_num} ({len(msgs)} items). Total: {len(messages)}'})}\n\n"
                     
-                    # FIX: Inbox Limit Check
                     if len(messages) > MAX_INBOX_SCAN_LIMIT:
                         yield f"data: {json.dumps({'error': f'Inbox too large ({len(messages)}+). Scan limit is {MAX_INBOX_SCAN_LIMIT}. Please archive emails.'})}\n\n"
                         return
@@ -213,6 +212,7 @@ def scan_stream():
 
         # Phase 2: Fetch Details
         senders = []
+        total_batches = (total_messages // BATCH_SIZE) + (1 if total_messages % BATCH_SIZE > 0 else 0)
         
         for i in range(0, total_messages, BATCH_SIZE):
             chunk = messages[i:i + BATCH_SIZE]
@@ -246,15 +246,15 @@ def scan_stream():
                     batch_success = True
                     break 
                 except Exception as e:
-                    yield f"data: {json.dumps({'log': f'Batch {current_batch_num} connection failed: {str(e)}. Retrying...', 'level': 'error'})}\n\n"
+                    yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} connection failed: {str(e)}. Retrying...', 'level': 'error'})}\n\n"
                     time.sleep(2 ** attempt)
             
             if not batch_success:
-                 yield f"data: {json.dumps({'log': f'CRITICAL: Batch {current_batch_num} dropped completely.', 'level': 'error'})}\n\n"
+                 yield f"data: {json.dumps({'log': f'CRITICAL: Batch {current_batch_num}/{total_batches} dropped completely.', 'level': 'error'})}\n\n"
 
             # Repair Loop
             if batch_failures:
-                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} items hit rate limit. Repairing...', 'level': 'warn'})}\n\n"
+                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches}: {len(batch_failures)} items hit rate limit. Repairing...', 'level': 'warn'})}\n\n"
                 
                 count_repaired = 0
                 for failed_id in batch_failures:
@@ -283,8 +283,9 @@ def scan_stream():
                     yield f"data: {json.dumps({'status': 'progress', 'processed': current_absolute, 'total': total_messages, 'percent': current_percent})}\n\n"
             
             else:
+                # FIX: Show "Batch X/Total"
                 if current_batch_num % 5 == 0:
-                    yield f"data: {json.dumps({'log': f'Batch {current_batch_num} processed perfectly.'})}\n\n"
+                    yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed perfectly.'})}\n\n"
 
             processed_count = min(i + BATCH_SIZE, total_messages)
             progress_data = {
@@ -297,10 +298,8 @@ def scan_stream():
             
             time.sleep(BATCH_SLEEP_SECONDS)
 
-        # FIX: Removed Pandas, using Counter
         if senders:
             counts = Counter(senders)
-            # Sort by Count (Desc) then Email (Asc) for consistency
             result_data = [{'email': email, 'count': count} for email, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
         else:
             result_data = []

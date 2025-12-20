@@ -2,443 +2,267 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Inbox Analyzer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gmail Cleaner Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
     <style>
-        body { background-color: #f4f6f8; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
-        .main-container { background-color: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); padding: 20px; }
-        .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
-        .user-profile { display: flex; align-items: center; cursor: pointer; }
-        .user-avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; margin-left: 10px; border: 2px solid #e9ecef; }
-        .controls-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
-        .search-box { position: relative; width: 300px; }
-        .search-box i { position: absolute; left: 10px; top: 10px; color: #aaa; }
-        .search-box input { padding-left: 35px; border-radius: 6px; border: 1px solid #ced4da; }
-        .table-responsive { border: 1px solid #e9ecef; border-radius: 8px; overflow: hidden; }
-        .table thead th { background-color: #f8f9fa; border-bottom: 1px solid #e9ecef; color: #6c757d; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; padding: 15px; }
-        .table tbody td { vertical-align: middle; padding: 15px; font-size: 0.9rem; color: #495057; }
-        .email-cell { font-weight: 500; color: #212529; }
-        .count-badge { background-color: #e9ecef; color: #495057; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }
-        .pagination-container { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; color: #6c757d; font-size: 0.9rem; }
-        .page-link { color: #6c757d; border: none; background: none; padding: 5px 10px; }
-        .console-window { background-color: #1e1e1e; color: #00ff00; font-family: monospace; font-size: 0.8rem; height: 150px; overflow-y: auto; border-radius: 5px; padding: 10px; margin-top: 20px; display: none; }
-        .log-info { color: #ccc; } .log-success { color: #28a745; } .log-warn { color: #ffc107; } .log-error { color: #dc3545; }
+        .step-container { margin-bottom: 2rem; padding: 1.5rem; border: 1px solid #dee2e6; border-radius: 0.5rem; }
+        .log-box { height: 150px; overflow-y: scroll; background: #f8f9fa; border: 1px solid #ddd; padding: 10px; font-family: monospace; font-size: 0.9rem; }
+        .hidden { display: none; }
     </style>
 </head>
-<body>
+<body class="bg-light">
 
-<nav class="navbar navbar-expand-lg navbar-light bg-white border-bottom py-3">
-    <div class="container-fluid px-5">
-        <a class="navbar-brand fw-bold" href="#">Inbox Analyzer</a>
-        <div class="d-flex align-items-center">
-            <div class="dropdown">
-                <div class="user-profile dropdown-toggle" data-bs-toggle="dropdown">
-                    <span id="user-name" class="fw-medium me-2">Loading...</span>
-                    <img id="user-avatar" src="https://via.placeholder.com/36" class="user-avatar" alt="User">
-                </div>
-                <ul class="dropdown-menu dropdown-menu-end shadow">
-                    <li class="px-3 py-2 text-muted" style="font-size:0.8rem" id="user-email">email@example.com</li>
-                    <li><hr class="dropdown-divider"></li>
-                    <li><a class="dropdown-item text-danger" href="/logout">Logout</a></li>
-                </ul>
-            </div>
-        </div>
-    </div>
-</nav>
-
-<div class="container mt-5 mb-5">
-    
-    <div id="progress-container" class="mb-4">
-        <div class="d-flex justify-content-between mb-1">
-            <span id="progress-text" class="text-muted small">Initializing...</span>
-            <span id="progress-percent" class="fw-bold small">0%</span>
-        </div>
-        <div class="progress" style="height: 8px;">
-            <div id="progress-bar-inner" class="progress-bar" style="width: 0%"></div>
+<div class="container py-5">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>Gmail Cleaner</h1>
+        <div>
+            <span id="user-email" class="me-3 text-muted">Loading...</span>
+            <a href="/logout" class="btn btn-outline-danger btn-sm">Logout</a>
         </div>
     </div>
 
-    <div class="main-container">
+    <div class="step-container bg-white shadow-sm">
+        <h3>Step 1: Scan Inbox</h3>
+        <p class="text-muted">This will scan your inbox to find frequent senders.</p>
         
-        <div class="controls-bar">
-            <div class="d-flex align-items-center gap-3">
-                <div class="search-box">
-                    <i class="bi bi-search"></i>
-                    <input type="text" class="form-control" id="searchInput" placeholder="Search emails..." onkeyup="handleSearch()">
-                </div>
-                <div id="selection-count" class="text-primary fw-bold small" style="display:none;">0 Selected</div>
-            </div>
-            
-            <div class="action-buttons">
-                <button class="btn btn-light border text-secondary" onclick="window.location.reload()">
-                    <i class="bi bi-arrow-clockwise"></i> Reload
-                </button>
-                <button class="btn btn-light border text-secondary" onclick="downloadCSV()">
-                    <i class="bi bi-download"></i> CSV
-                </button>
-                <button id="apply-btn" class="btn btn-primary px-4" onclick="applyChanges()">
-                    APPLY CHANGES
-                </button>
-            </div>
+        <div class="progress mb-3 hidden" id="scan-progress-container">
+            <div id="scan-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
         </div>
+        
+        <div id="scan-log" class="log-box mb-3">Ready to scan...</div>
+        
+        <button id="btn-scan" class="btn btn-primary">Start Scan</button>
+    </div>
 
+    <div id="action-section" class="step-container bg-white shadow-sm hidden">
+        <h3>Step 2: Review & Take Action</h3>
+        <p class="text-muted">Select actions for the top senders found.</p>
+        
         <div class="table-responsive">
-            <table class="table table-borderless mb-0">
-                <thead>
+            <table class="table table-hover align-middle">
+                <thead class="table-light">
                     <tr>
-                        <th style="width: 40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
-                        <th>Sender Email</th>
-                        <th style="width: 100px;">Count</th>
-                        <th style="width: 300px;">Action</th>
+                        <th style="width: 40%">Sender Email</th>
+                        <th style="width: 15%">Count</th>
+                        <th style="width: 45%">Action</th>
                     </tr>
                 </thead>
-                <tbody id="email-table-body">
-                </tbody>
+                <tbody id="results-body"></tbody>
             </table>
         </div>
 
-        <div class="pagination-container" id="pagination-controls" style="display:none;">
-            <div class="rows-per-page">
-                Show 
-                <select id="rowsPerPage" onchange="changeRowsPerPage()">
-                    <option value="10">10</option>
-                    <option value="25">25</option>
-                    <option value="50" selected>50</option>
-                </select>
-                rows
-            </div>
-            
-            <div>
-                <span id="page-info" class="me-3">1-50 of 100</span>
-                <button class="btn btn-sm btn-outline-secondary border-0" onclick="changePage(-1)"><i class="bi bi-chevron-left"></i></button>
-                <input type="number" id="jumpToPage" class="form-control d-inline-block text-center mx-1" style="width: 50px; height: 30px; font-size: 0.85rem;" value="1" onchange="jumpToPage()">
-                <button class="btn btn-sm btn-outline-secondary border-0" onclick="changePage(1)"><i class="bi bi-chevron-right"></i></button>
-            </div>
+        <div class="mt-4">
+            <button id="btn-apply" class="btn btn-success btn-lg w-100">Apply Selected Actions</button>
         </div>
-
-    </div>
-
-    <div class="mt-3">
-        <button class="btn btn-link text-decoration-none btn-sm text-muted" onclick="toggleLogs()">
-            <i class="bi bi-terminal"></i> Show System Logs
-        </button>
-        <div id="scan-debugger" class="console-window">
-            <div class="log-info">System ready. Waiting for scan...</div>
-        </div>
+        
+        <div id="apply-log" class="log-box mt-3 hidden"></div>
     </div>
 </div>
 
-<div class="modal fade" id="labelModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">New Label</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div class="mb-3">
-                    <label class="form-label">Name:</label>
-                    <input type="text" class="form-control" id="newLabelName">
-                </div>
-                <div class="form-check mb-2">
-                    <input class="form-check-input" type="checkbox" id="nestLabelCheck" onchange="toggleNestDropdown()">
-                    <label class="form-check-label">Nest label under:</label>
-                </div>
-                <select class="form-select" id="parentLabelSelect" disabled></select>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-primary" onclick="confirmLabelCreation()">Create</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    let allData = [];
-    let filteredData = [];
-    let existingLabels = [];
-    let currentPage = 1;
-    let rowsPerPage = 50;
-    let pendingActions = {};
-    let labelOptionsHTML = "";
-    let currentEditingRowEmail = null;
+let existingLabels = [];
 
-    // --- INIT: PARALLEL EXECUTION ---
-    // NO await here. We fire everything at once.
-    window.onload = function() {
-        startScanStream();        // 1. Starts immediately (0s delay)
-        fetchUserInfo();          // 2. Background
-        fetchLabelsAndPopulate(); // 3. Background
+// 1. Load User Info & Labels on Start
+async function init() {
+    // Get User Email
+    try {
+        const uRes = await fetch('/api/user_info');
+        const user = await uRes.json();
+        if (user.email) document.getElementById('user-email').innerText = user.email;
+    } catch (e) { console.error(e); }
+
+    // Get Labels (The critical part for your rollback)
+    try {
+        const lRes = await fetch('/api/get_labels');
+        existingLabels = await lRes.json();
+        console.log("Labels loaded:", existingLabels.length);
+    } catch (e) { console.error("Error loading labels", e); }
+}
+init();
+
+// 2. Scan Logic (SSE)
+const btnScan = document.getElementById('btn-scan');
+const scanLog = document.getElementById('scan-log');
+const scanBar = document.getElementById('scan-bar');
+const progressContainer = document.getElementById('scan-progress-container');
+const actionSection = document.getElementById('action-section');
+const resultsBody = document.getElementById('results-body');
+
+btnScan.addEventListener('click', () => {
+    btnScan.disabled = true;
+    scanLog.innerHTML = '';
+    progressContainer.classList.remove('hidden');
+    
+    const eventSource = new EventSource('/api/scan_stream');
+    
+    eventSource.onmessage = function(e) {
+        const data = JSON.parse(e.data);
+        
+        if (data.log) {
+            const entry = document.createElement('div');
+            entry.innerText = data.log;
+            if (data.level === 'error') entry.style.color = 'red';
+            if (data.level === 'success') entry.style.color = 'green';
+            scanLog.appendChild(entry);
+            scanLog.scrollTop = scanLog.scrollHeight;
+        }
+
+        if (data.status === 'progress') {
+            scanBar.style.width = data.percent + '%';
+            scanBar.innerText = data.percent + '%';
+        }
+
+        if (data.status === 'complete') {
+            eventSource.close();
+            btnScan.disabled = false;
+            renderTable(data.data || []);
+            actionSection.classList.remove('hidden');
+        }
     };
 
-    async function fetchUserInfo() {
-        try {
-            const res = await fetch('/api/user_info');
-            const data = await res.json();
-            if (data.name) document.getElementById('user-name').innerText = data.name;
-            if (data.picture) document.getElementById('user-avatar').src = data.picture;
-            if (data.email) document.getElementById('user-email').innerText = data.email;
-        } catch(e) { console.error("User info fetch failed", e); }
-    }
+    eventSource.onerror = function() {
+        eventSource.close();
+        btnScan.disabled = false;
+        scanLog.innerHTML += '<div style="color:red">Connection lost.</div>';
+    };
+});
 
-    async function fetchLabelsAndPopulate() {
-        try {
-            const labelRes = await fetch('/api/get_labels');
-            existingLabels = await labelRes.json();
-            
-            // FIX: Removed the .filter(type === 'user'). Now shows ALL labels.
-            // Sorting to put System labels (like INBOX) at the bottom or top is optional, 
-            // but this ensures the list is not empty.
-            labelOptionsHTML = existingLabels
-                .map(l => `<option value="label:${l.id}">${l.name}</option>`)
-                .join('');
-            
-            populateParentLabelSelect();
-            // If table rendered before labels were ready, re-render to populate dropdowns
-            if (filteredData.length > 0) renderTable(); 
-        } catch(e) { console.error("Label fetch failed", e); }
-    }
-
-    // --- TABLE LOGIC ---
-    function renderTable() {
-        const tbody = document.getElementById('email-table-body');
-        tbody.innerHTML = '';
+// 3. Render Table with Dropdowns
+function renderTable(senders) {
+    resultsBody.innerHTML = '';
+    senders.slice(0, 50).forEach((item, index) => {
+        const row = document.createElement('tr');
         
-        const start = (currentPage - 1) * rowsPerPage;
-        const end = start + rowsPerPage;
-        const pageData = filteredData.slice(start, end);
+        // Build the Label Options
+        // IMPORTANT: We map value=label.id, text=label.name
+        let labelOptions = `<option value="" selected>Select existing label...</option>`;
+        existingLabels.forEach(l => {
+            labelOptions += `<option value="${l.id}">${l.name}</option>`;
+        });
 
-        if (pageData.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-muted">No emails found</td></tr>';
-            return;
-        }
+        row.innerHTML = `
+            <td>${item.email}</td>
+            <td><strong>${item.count}</strong></td>
+            <td>
+                <select class="form-select action-select mb-2" onchange="toggleInputs(this, ${index})">
+                    <option value="ignore" selected>Ignore</option>
+                    <option value="delete">Delete All (Trash)</option>
+                    <option value="label">Move to Label</option>
+                </select>
 
-        pageData.forEach(row => {
-            const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td><input type="checkbox" class="row-checkbox" onchange="updateSelection()"></td>
-                <td class="email-cell">${row.email}</td>
-                <td><span class="count-badge">${row.count}</span></td>
-                <td>
-                    <select class="form-select form-select-sm action-select" style="width: 200px;" data-email="${row.email}" onchange="handleActionChange(this)">
-                        <option value="none" selected>Choose action...</option>
-                        <option value="delete">Delete</option>
-                        <optgroup label="Send to Folder">
-                            <option value="new_label">+ Create New Label</option>
-                            ${labelOptionsHTML}
-                        </optgroup>
+                <div id="label-inputs-${index}" class="hidden p-2 bg-light border rounded">
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="radio" name="labelType-${index}" id="exist-${index}" value="existing" checked onchange="toggleLabelMode(${index}, 'existing')">
+                        <label class="form-check-label" for="exist-${index}">Existing Label</label>
+                    </div>
+                    <select class="form-select mb-2" id="dropdown-${index}">
+                        ${labelOptions}
                     </select>
-                </td>
-            `;
-            tbody.appendChild(tr);
-        });
 
-        document.getElementById('page-info').innerText = `${start + 1}-${Math.min(end, filteredData.length)} of ${filteredData.length}`;
-        document.getElementById('pagination-controls').style.display = 'flex';
-        document.getElementById('jumpToPage').value = currentPage;
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="radio" name="labelType-${index}" id="new-${index}" value="new" onchange="toggleLabelMode(${index}, 'new')">
+                        <label class="form-check-label" for="new-${index}">New Label</label>
+                    </div>
+                    <input type="text" class="form-control form-control-sm hidden" id="newinput-${index}" placeholder="Enter new label name">
+                </div>
+            </td>
+        `;
+        resultsBody.appendChild(row);
+    });
+}
+
+// UI Toggles
+window.toggleInputs = function(selectElem, idx) {
+    const div = document.getElementById(`label-inputs-${idx}`);
+    if (selectElem.value === 'label') div.classList.remove('hidden');
+    else div.classList.add('hidden');
+};
+
+window.toggleLabelMode = function(idx, mode) {
+    const dd = document.getElementById(`dropdown-${idx}`);
+    const inp = document.getElementById(`newinput-${idx}`);
+    if (mode === 'existing') {
+        dd.classList.remove('hidden');
+        inp.classList.add('hidden');
+    } else {
+        dd.classList.add('hidden');
+        inp.classList.remove('hidden');
     }
+};
 
-    function changeRowsPerPage() {
-        rowsPerPage = parseInt(document.getElementById('rowsPerPage').value);
-        currentPage = 1;
-        renderTable();
-    }
-
-    function changePage(delta) {
-        const maxPage = Math.ceil(filteredData.length / rowsPerPage);
-        const newPage = currentPage + delta;
-        if (newPage >= 1 && newPage <= maxPage) {
-            currentPage = newPage;
-            renderTable();
-        }
-    }
-
-    function jumpToPage() {
-        const val = parseInt(document.getElementById('jumpToPage').value);
-        const maxPage = Math.ceil(filteredData.length / rowsPerPage);
-        if (val >= 1 && val <= maxPage) {
-            currentPage = val;
-            renderTable();
-        } else {
-            document.getElementById('jumpToPage').value = currentPage;
-        }
-    }
-
-    function handleSearch() {
-        const term = document.getElementById('searchInput').value.toLowerCase();
-        filteredData = allData.filter(row => row.email.includes(term));
-        currentPage = 1;
-        renderTable();
-    }
-
-    function toggleSelectAll() {
-        const checked = document.getElementById('selectAll').checked;
-        document.querySelectorAll('.row-checkbox').forEach(cb => cb.checked = checked);
-        updateSelection();
-    }
-
-    function updateSelection() {
-        const count = document.querySelectorAll('.row-checkbox:checked').length;
-        const indicator = document.getElementById('selection-count');
-        if (count > 0) {
-            indicator.style.display = 'block';
-            indicator.innerText = `${count} Selected`;
-        } else {
-            indicator.style.display = 'none';
-        }
-    }
-
-    function downloadCSV() {
-        let csvContent = "data:text/csv;charset=utf-8,Sender Email,Count\n";
-        filteredData.forEach(row => {
-            csvContent += `${row.email},${row.count}\n`;
-        });
-        const encodedUri = encodeURI(csvContent);
-        const link = document.createElement("a");
-        link.setAttribute("href", encodedUri);
-        link.setAttribute("download", "inbox_analysis.csv");
-        document.body.appendChild(link);
-        link.click();
-    }
-
-    function toggleLogs() {
-        const logWin = document.getElementById('scan-debugger');
-        logWin.style.display = (logWin.style.display === 'none' || logWin.style.display === '') ? 'block' : 'none';
-    }
-
-    function logToScanDebugger(msg, type='info') {
-        const consoleWin = document.getElementById('scan-debugger');
-        const line = document.createElement('div');
-        line.className = `log-${type}`;
-        line.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
-        consoleWin.appendChild(line);
-        consoleWin.scrollTop = consoleWin.scrollHeight;
-    }
-
-    // --- STREAMING LOGIC ---
-    function startScanStream() {
-        const progressText = document.getElementById('progress-text');
-        progressText.innerText = "Initiating connection...";
-        logToScanDebugger("Contacting server...", "info");
-
-        const evtSource = new EventSource("/api/scan_stream");
-        const progressBar = document.getElementById('progress-bar-inner');
-        
-        evtSource.onmessage = function(event) {
-            // Filter out the padding
-            if (!event.data.trim().startsWith('{')) return;
-            
-            const data = JSON.parse(event.data);
-            if (data.log) logToScanDebugger(data.log, data.level || 'info');
-            if (data.error) { logToScanDebugger("ERROR: " + data.error, "error"); evtSource.close(); }
-            
-            if (data.status === 'init') progressText.innerText = data.message;
-            else if (data.status === 'progress') {
-                progressBar.style.width = data.percent + "%";
-                progressText.innerText = `Scanning ${data.processed} of ${data.total}...`;
-                document.getElementById('progress-percent').innerText = data.percent + "%";
-            } else if (data.status === 'complete') {
-                progressBar.style.width = "100%";
-                progressText.innerText = "Scan Complete";
-                document.getElementById('progress-percent').innerText = "100%";
-                setTimeout(() => document.getElementById('progress-container').style.display = 'none', 2000);
-                
-                allData = data.data;
-                filteredData = allData;
-                renderTable();
-                evtSource.close();
-            }
-        };
-        evtSource.onerror = function() { evtSource.close(); };
-    }
-
-    // --- ACTION LOGIC ---
-    function handleActionChange(selectElem) {
-        const val = selectElem.value;
-        const email = selectElem.dataset.email;
-        if (val === 'new_label') {
-            currentEditingRowEmail = email;
-            new bootstrap.Modal(document.getElementById('labelModal')).show();
-        } else { delete pendingActions[email]; }
-    }
+// 4. Apply Actions
+document.getElementById('btn-apply').addEventListener('click', async () => {
+    const actions = [];
+    const rows = resultsBody.querySelectorAll('tr');
     
-    function toggleNestDropdown() { document.getElementById('parentLabelSelect').disabled = !document.getElementById('nestLabelCheck').checked; }
-    function populateParentLabelSelect() {
-        const select = document.getElementById('parentLabelSelect');
-        existingLabels.forEach(l => { 
-            // Show all folders in parent select too
-            const opt = document.createElement('option');
-            opt.value = l.id; opt.text = l.name;
-            select.appendChild(opt);
-        });
-    }
-    function confirmLabelCreation() {
-        const name = document.getElementById('newLabelName').value;
-        const isNested = document.getElementById('nestLabelCheck').checked;
-        const parentId = document.getElementById('parentLabelSelect').value;
-        const parentName = document.getElementById('parentLabelSelect').options[document.getElementById('parentLabelSelect').selectedIndex]?.text;
+    rows.forEach((row, index) => {
+        const email = row.cells[0].innerText;
+        const action = row.querySelector('.action-select').value;
         
-        pendingActions[currentEditingRowEmail] = {
-            action: 'label', isNew: true, labelName: name,
-            parentId: isNested ? parentId : null, parentName: isNested ? parentName : null
-        };
-        const select = document.querySelector(`.action-select[data-email="${currentEditingRowEmail}"]`);
-        const opt = document.createElement('option');
-        opt.value = "temp_custom"; opt.text = `New Label: ${name}`; opt.selected = true;
-        select.add(opt, select[1]);
-        bootstrap.Modal.getInstance(document.getElementById('labelModal')).hide();
-    }
+        if (action === 'ignore') return;
 
-    async function applyChanges() {
-        const selects = document.querySelectorAll('.action-select');
-        const actions = [];
-        selects.forEach(s => {
-            if (s.value === 'none') return;
-            const email = s.dataset.email;
-            if (pendingActions[email] && s.value === 'temp_custom') actions.push({ email: email, ...pendingActions[email] });
-            else if (s.value === 'delete') actions.push({ email: email, action: 'delete' });
-            else if (s.value.startsWith('label:')) {
-                const labelName = s.options[s.selectedIndex].text;
-                actions.push({ email: email, action: 'label', labelId: s.value.split(':')[1], labelName: labelName });
+        let payload = { email, action };
+
+        if (action === 'label') {
+            const mode = document.querySelector(`input[name="labelType-${index}"]:checked`).value;
+            if (mode === 'existing') {
+                const select = document.getElementById(`dropdown-${index}`);
+                payload.labelId = select.value; // ID from backend
+                payload.labelName = select.options[select.selectedIndex].text; // Name for display
+                payload.isNew = false;
+            } else {
+                payload.labelName = document.getElementById(`newinput-${index}`).value;
+                payload.isNew = true;
             }
-        });
-        if(actions.length === 0) return alert("No actions selected");
-
-        document.getElementById('apply-btn').disabled = true;
-        document.getElementById('apply-btn').innerText = "Processing...";
-        toggleLogs(); 
-        logToScanDebugger("Starting Apply Changes...", "info");
-
-        try {
-            const response = await fetch('/api/apply_actions', {
-                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(actions)
-            });
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                const lines = decoder.decode(value).split('\n');
-                for (const line of lines) {
-                    if (!line.trim()) continue;
-                    try {
-                        const jsonLog = JSON.parse(line);
-                        if (jsonLog.status === 'complete') {
-                            logToScanDebugger("Actions complete. Reloading...", "success");
-                            setTimeout(() => window.location.reload(), 2000);
-                        } else if (jsonLog.msg) {
-                            logToScanDebugger(jsonLog.msg, jsonLog.msg.includes("ERROR") ? 'error' : 'info');
-                        }
-                    } catch(e) {}
-                }
-            }
-        } catch (err) {
-            logToScanDebugger(`Connection Error: ${err.message}`, "error");
-            document.getElementById('apply-btn').disabled = false;
+            // Validation
+            if (!payload.labelId && !payload.isNew) return; // Skip if no label selected
+            if (payload.isNew && !payload.labelName) return; // Skip if no name typed
         }
+        actions.push(payload);
+    });
+
+    if (actions.length === 0) return alert("No actions selected.");
+
+    const logDiv = document.getElementById('apply-log');
+    logDiv.classList.remove('hidden');
+    logDiv.innerText = "Initiating actions...\n";
+
+    // Streaming Response for Actions
+    try {
+        const response = await fetch('/api/apply_actions', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(actions)
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n');
+            lines.forEach(line => {
+                if (!line.trim()) return;
+                try {
+                    const data = JSON.parse(line);
+                    if (data.msg) {
+                        logDiv.innerText += data.msg + "\n";
+                        logDiv.scrollTop = logDiv.scrollHeight;
+                    }
+                    if (data.status === 'complete') {
+                        alert("All actions completed!");
+                        window.location.reload();
+                    }
+                } catch(e) {}
+            });
+        }
+    } catch (e) {
+        logDiv.innerText += "Error applying actions.\n";
     }
+});
 </script>
 </body>
 </html>

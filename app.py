@@ -132,7 +132,11 @@ def logout():
 
 @app.route('/api/user_info')
 def api_user_info():
-    return jsonify(session.get('user_info', {}))
+    # Helper to expose session type to frontend
+    data = session.get('user_info', {})
+    if isinstance(data, dict):
+        data['session_storage'] = app.config.get('SESSION_TYPE', 'unknown')
+    return jsonify(data)
 
 @app.route('/api/get_labels')
 def get_labels():

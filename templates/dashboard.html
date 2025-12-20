@@ -279,6 +279,15 @@
             if (data.name) document.getElementById('user-name').innerText = data.name;
             if (data.picture) document.getElementById('user-avatar').src = data.picture;
             if (data.email) document.getElementById('user-email').innerText = data.email;
+            
+            // --- LOG SESSION TYPE ---
+            if (data.session_storage) {
+                const type = data.session_storage;
+                const msg = type === 'redis' 
+                    ? "Session storage: Redis (Persistent)" 
+                    : "Session storage: Filesystem (Ephemeral - resets on restart)";
+                logToScanDebugger(msg, type === 'redis' ? 'success' : 'warn');
+            }
         } catch(e) { console.error("User info fetch failed", e); }
     }
 
@@ -414,20 +423,15 @@
         logWin.style.display = (logWin.style.display === 'none' || logWin.style.display === '') ? 'block' : 'none';
     }
 
-    // --- FIX: LIMITED LOGGING TO PREVENT UI FREEZE ---
     function logToScanDebugger(msg, type='info') {
         const consoleWin = document.getElementById('scan-debugger');
         const line = document.createElement('div');
         line.className = `log-${type}`;
         line.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
         consoleWin.appendChild(line);
-        
-        // --- KEY PERFORMANCE FIX ---
-        // Automatically remove old logs if > 50 lines to prevent DOM bloat
         while (consoleWin.children.length > 50) {
             consoleWin.removeChild(consoleWin.firstChild);
         }
-        
         consoleWin.scrollTop = consoleWin.scrollHeight;
     }
 

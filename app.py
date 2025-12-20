@@ -69,14 +69,12 @@ def callback():
         'token_uri': creds.token_uri, 'client_id': creds.client_id,
         'client_secret': creds.client_secret, 'scopes': creds.scopes
     }
-
     try:
         user_service = build('oauth2', 'v2', credentials=creds)
         user_info = user_service.userinfo().get().execute()
         session['user_info'] = user_info
     except Exception as e:
         print(f"Could not fetch user info: {e}")
-
     return redirect(url_for('index'))
 
 @app.route('/logout')
@@ -99,6 +97,7 @@ def scan_stream():
         
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...', 'log': 'Starting connection to Gmail API...'})}\n\n"
         
+        # --- PHASE 1: LIST MESSAGES ---
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
         
         page_num = 1
@@ -129,6 +128,7 @@ def scan_stream():
             yield f"data: {json.dumps({'status': 'complete', 'data': []})}\n\n"
             return
 
+        # --- PHASE 2: FETCH DETAILS ---
         senders = []
         batch_size = 25
         total_batches = (total_messages // batch_size) + 1
@@ -155,6 +155,7 @@ def scan_stream():
                           callback=batch_callback,
                           request_id=msg['id'])
             
+            # Execute Batch
             batch_success = False
             for attempt in range(5):
                 try:
@@ -168,13 +169,12 @@ def scan_stream():
             if not batch_success:
                  yield f"data: {json.dumps({'log': f'CRITICAL: Batch {current_batch_num} dropped completely.', 'level': 'error'})}\n\n"
 
+            # --- REPAIR LOOP ---
             if batch_failures:
                 yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} items failed. Repairing...', 'level': 'warn'})}\n\n"
                 count_repaired = 0
                 for failed_id in batch_failures:
                     count_repaired += 1
-                    if count_repaired % 2 == 0:
-                         yield f"data: {json.dumps({'log': f'  ...repairing item {count_repaired}/{len(batch_failures)} in batch {current_batch_num}...', 'level': 'info'})}\n\n"
                     
                     retry_success = False
                     for retry_att in range(3):
@@ -192,6 +192,12 @@ def scan_stream():
                     
                     if not retry_success:
                          yield f"data: {json.dumps({'log': f'Permanently failed to fetch message {failed_id}.', 'level': 'error'})}\n\n"
+
+                    # --- THE FIX: Update progress bar DURING repairs ---
+                    # Calculate position: base_index + successful_batch_items + currently_repaired_items
+                    current_absolute = i + (len(chunk) - len(batch_failures)) + count_repaired
+                    current_percent = int((current_absolute / total_messages) * 100)
+                    yield f"data: {json.dumps({'status': 'progress', 'processed': current_absolute, 'total': total_messages, 'percent': current_percent})}\n\n"
             
             else:
                 yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed perfectly.'})}\n\n"
@@ -205,11 +211,16 @@ def scan_stream():
             }
             yield f"data: {json.dumps(progress_data)}\n\n"
 
+        # --- PHASE 3: AGGREGATE ---
         df = pd.DataFrame(senders, columns=['email'])
-        counts = df['email'].value_counts().reset_index()
-        counts.columns = ['email', 'count']
-        counts = counts.sort_values(by=['count', 'email'], ascending=[False, True])
-        result_data = counts.to_dict(orient='records')
+        if not df.empty:
+            counts = df['email'].value_counts().reset_index()
+            counts.columns = ['email', 'count']
+            counts = counts.sort_values(by=['count', 'email'], ascending=[False, True])
+            result_data = counts.to_dict(orient='records')
+        else:
+            result_data = []
+            
         yield f"data: {json.dumps({'status': 'complete', 'data': result_data, 'log': 'Analysis Complete. Rendering table...', 'level': 'success'})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
@@ -231,7 +242,6 @@ def apply_actions():
     actions = request.json 
     def generate_updates():
         service = get_service()
-        
         def execute_with_retry(request_obj):
             for attempt in range(4):
                 try:

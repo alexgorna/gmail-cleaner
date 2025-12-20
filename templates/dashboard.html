@@ -70,7 +70,7 @@
             font-size: 0.85rem; font-weight: 600; display: inline-block; min-width: 40px; text-align: center;
         }
 
-        /* Processed Row Style (The Fix) */
+        /* Processed Row Style */
         .row-processed { opacity: 0.5; background-color: #f8f9fa; pointer-events: none; }
         .row-processed .email-text { text-decoration: line-through; color: #999; }
         .row-processed .action-select { background-color: #e9ecef; border-color: #dee2e6; color: #6c757d; }
@@ -298,18 +298,15 @@
         pageData.forEach(row => {
             const tr = document.createElement('tr');
             
-            // Logic for Processed vs Pending rows
             let selectedValue = 'none';
             let rowClass = '';
             let isDisabled = false;
 
             if (row.processedAction) {
-                // If it was already processed, grey it out and lock the value
                 selectedValue = row.processedAction;
                 rowClass = 'row-processed';
                 isDisabled = true;
             } else if (pendingActions[row.email]) {
-                // If currently pending (selected by user but not applied)
                 const pending = pendingActions[row.email];
                 if (pending.action === 'delete') selectedValue = 'delete';
                 else if (pending.action === 'label') selectedValue = `label:${pending.labelId}`;
@@ -337,14 +334,11 @@
             
             const select = tr.querySelector('select');
             select.value = selectedValue;
-            
             tbody.appendChild(tr);
         });
 
         document.getElementById('page-info').innerText = `${start + 1}-${Math.min(end, filteredData.length)} of ${filteredData.length}`;
         document.getElementById('pagination-controls').style.setProperty('display', 'flex', 'important');
-        
-        // After rendering, update selection count (to handle disabled rows)
         updateSelection();
     }
 
@@ -419,12 +413,21 @@
         const logWin = document.getElementById('scan-debugger');
         logWin.style.display = (logWin.style.display === 'none' || logWin.style.display === '') ? 'block' : 'none';
     }
+
+    // --- FIX: LIMITED LOGGING TO PREVENT UI FREEZE ---
     function logToScanDebugger(msg, type='info') {
         const consoleWin = document.getElementById('scan-debugger');
         const line = document.createElement('div');
         line.className = `log-${type}`;
         line.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
         consoleWin.appendChild(line);
+        
+        // --- KEY PERFORMANCE FIX ---
+        // Automatically remove old logs if > 50 lines to prevent DOM bloat
+        while (consoleWin.children.length > 50) {
+            consoleWin.removeChild(consoleWin.firstChild);
+        }
+        
         consoleWin.scrollTop = consoleWin.scrollHeight;
     }
 
@@ -533,9 +536,6 @@
                         const jsonLog = JSON.parse(line);
                         if (jsonLog.status === 'complete') {
                             logToScanDebugger("Actions complete.", "success");
-                            
-                            // --- SUCCESS HANDLING (No Reload) ---
-                            // 1. Mark rows as processed in data model
                             actions.forEach(act => {
                                 const item = allData.find(d => d.email === act.email);
                                 if(item) {
@@ -543,14 +543,9 @@
                                     delete pendingActions[act.email];
                                 }
                             });
-                            
-                            // 2. Re-render table to show greyed out state
                             renderTable();
-                            
-                            // 3. Reset Button State
                             btn.disabled = false;
                             btn.innerText = "Apply Actions";
-                            
                         } else if (jsonLog.msg) {
                             logToScanDebugger(jsonLog.msg, jsonLog.msg.includes("ERROR") ? 'error' : 'info');
                         }

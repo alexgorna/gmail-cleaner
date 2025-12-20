@@ -23,7 +23,7 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_key_for_testing_only')
 # --- CONFIGURATION & CONSTANTS ---
 
 # API Rate Limiting & Pagination Constants
-BATCH_SIZE = 18              # Safe limit for batch requests (limit is ~25)
+BATCH_SIZE = 18              # Safe limit for batch requests
 BATCH_SLEEP_SECONDS = 0.2    # Rate limiting pause
 MAX_RETRIES = 5              # Connection retry attempts
 MAX_MESSAGES_PER_PAGE = 500  # Max Gmail IDs to fetch per list request
@@ -44,6 +44,8 @@ else:
     app.config['SESSION_TYPE'] = 'filesystem'
 
 Session(app)
+
+# FIX 1: Initialize CSRF but exempt specific endpoints
 csrf = CSRFProtect(app)
 
 CLIENT_SECRETS_FILE = "client_secret.json"
@@ -110,8 +112,13 @@ def login():
 
 @app.route('/callback')
 def callback():
+    # FIX 2: State Validation (CSRF Protection for OAuth)
+    if not session.get('state') or request.args.get('state') != session['state']:
+        return "Invalid state parameter (Possible CSRF attack)", 400
+
     redirect_uri = url_for('callback', _external=True)
-    flow = Flow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES, redirect_uri=redirect_uri)
+    # Pass state to flow to ensure validation matches
+    flow = Flow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES, redirect_uri=redirect_uri, state=session['state'])
     flow.fetch_token(authorization_response=request.url)
     creds = flow.credentials
     session['credentials'] = {
@@ -134,7 +141,6 @@ def logout():
 
 @app.route('/api/user_info')
 def api_user_info():
-    # Helper to expose session type to frontend
     data = session.get('user_info', {})
     if isinstance(data, dict):
         data['session_storage'] = app.config.get('SESSION_TYPE', 'unknown')
@@ -156,14 +162,19 @@ def get_labels():
 # --- CORE LOGIC STREAMS ---
 
 @app.route('/api/scan_stream')
+@csrf.exempt  # FIX 1: Exempt SSE endpoint (EventSource cannot send CSRF headers)
 def scan_stream():
     if not get_creds(): 
         return Response("data: " + json.dumps({'error': 'Not logged in'}) + "\n\n", mimetype='text/event-stream')
 
     def generate():
         service = get_service()
+        # FIX 3: Null Safety Check
+        if not service:
+            yield f"data: {json.dumps({'error': 'Authentication expired. Please log in again.'})}\n\n"
+            return
+
         messages = []
-        
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...', 'log': 'Starting connection to Gmail API...'})}\n\n"
         
         # Phase 1: List Messages
@@ -303,6 +314,11 @@ def apply_actions():
     actions = request.json 
     def generate_updates():
         service = get_service()
+        # FIX 3: Null Safety Check
+        if not service:
+            yield json.dumps({"msg": "ERROR: Authentication failed. Please reload and login."}) + "\n"
+            return
+
         def execute_with_retry(request_obj):
             for attempt in range(4):
                 try:
@@ -324,7 +340,6 @@ def apply_actions():
                     yield json.dumps({"msg": "  - Moving emails to Trash..."}) + "\n"
                     msgs = []
                     
-                    # Pagination Loop
                     next_page_token = None
                     try:
                         while True:
@@ -404,7 +419,6 @@ def apply_actions():
                         yield json.dumps({"msg": "  - Moving existing emails..."}) + "\n"
                         msgs = []
                         
-                        # Pagination Loop for Labels
                         next_page_token = None
                         try:
                             while True:

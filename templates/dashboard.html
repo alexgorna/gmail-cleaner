@@ -44,8 +44,8 @@
         }
 
         /* Controls */
-        .controls-wrapper { padding: 20px; border-bottom: 1px solid #f1f5f9; background-color: #fff; }
-        .search-input-group { max-width: 500px; width: 100%; position: relative; }
+        .controls-wrapper { padding: 20px; border-bottom: 1px solid #f1f5f9; background-color: #fff; min-height: 80px; }
+        .search-input-group { max-width: 400px; width: 100%; position: relative; }
         .search-input-group i { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); color: #94a3b8; z-index: 5; }
         .search-input-group input { padding-left: 40px; border-radius: 50px; background-color: #f8fafc; border: 1px solid #e2e8f0; height: 45px; }
         .search-input-group input:focus { background-color: #fff; box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.15); border-color: var(--accent-color); }
@@ -127,21 +127,39 @@
     <div class="container-fluid px-0" style="max-width: 1400px; margin: 0 auto;">
         
         <div class="content-card">
-            <div class="controls-wrapper d-flex justify-content-between align-items-center">
-                <div class="search-input-group">
-                    <i class="bi bi-search"></i>
-                    <input type="text" id="searchInput" placeholder="Search senders..." onkeyup="handleSearch()">
-                </div>
+            <div class="controls-wrapper d-flex flex-wrap justify-content-between align-items-center">
                 
-                <div class="action-buttons d-flex align-items-center ms-md-3">
-                    <span id="selection-count" class="text-primary fw-bold small me-3" style="display:none;">0 Selected</span>
-                    <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small me-2" onclick="window.location.reload()">
+                <div class="d-flex align-items-center gap-3 w-100 w-md-auto" id="standard-controls">
+                    <div class="search-input-group">
+                        <i class="bi bi-search"></i>
+                        <input type="text" id="searchInput" placeholder="Search senders..." onkeyup="handleSearch()">
+                    </div>
+                    <button class="btn btn-light text-secondary border rounded-circle p-2" onclick="window.location.reload()" title="Reload">
                         <i class="bi bi-arrow-clockwise"></i>
                     </button>
-                    <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small me-2" onclick="downloadCSV()">
-                        <i class="bi bi-download"></i> CSV
+                    <button class="btn btn-light text-secondary border rounded-circle p-2" onclick="downloadCSV()" title="Download CSV">
+                        <i class="bi bi-download"></i>
                     </button>
-                    <button id="apply-btn" class="btn btn-primary rounded-pill px-4 py-2 small fw-bold" onclick="applyChanges()">
+                </div>
+
+                <div id="bulk-controls" class="d-flex align-items-center gap-2 w-100 w-md-auto mt-3 mt-md-0" style="display:none !important;">
+                    <span id="selection-count" class="text-primary fw-bold small me-2">0 Selected</span>
+                    
+                    <button class="btn btn-outline-danger rounded-pill px-3 py-2 small" onclick="applyBulkRowAction('delete')">
+                        <i class="bi bi-trash me-1"></i> Delete Selected
+                    </button>
+                    
+                    <div class="dropdown">
+                        <button class="btn btn-outline-secondary dropdown-toggle rounded-pill px-3 py-2 small" type="button" data-bs-toggle="dropdown">
+                            <i class="bi bi-folder me-1"></i> Label Selected
+                        </button>
+                        <ul class="dropdown-menu shadow border-0" id="bulk-label-dropdown">
+                            </ul>
+                    </div>
+                </div>
+
+                <div class="mt-3 mt-md-0 ms-auto ps-3">
+                    <button id="apply-btn" class="btn btn-primary rounded-pill px-4 py-2 small fw-bold shadow-sm" onclick="applyChanges()">
                         Apply Actions
                     </button>
                 </div>
@@ -237,7 +255,10 @@
             const labelRes = await fetch('/api/get_labels');
             existingLabels = await labelRes.json();
             labelOptionsHTML = existingLabels.filter(l => l.type === 'user').map(l => `<option value="label:${l.id}">${l.name}</option>`).join('');
+            
+            // Populate Dropdowns
             populateParentLabelSelect();
+            populateBulkDropdown(); 
         } catch(e) { console.log("Label fetch error", e); }
         
         startScanStream();
@@ -270,27 +291,37 @@
 
         pageData.forEach(row => {
             const tr = document.createElement('tr');
+            // Check if action already pending to set dropdown state
+            const pending = pendingActions[row.email];
+            let selectedValue = 'none';
+            if (pending) {
+                if (pending.action === 'delete') selectedValue = 'delete';
+                else if (pending.action === 'label') selectedValue = `label:${pending.labelId}`;
+            }
+
             tr.innerHTML = `
                 <td style="padding-left: 24px;"><input type="checkbox" class="form-check-input row-checkbox" onchange="updateSelection()"></td>
                 <td class="email-text">${row.email}</td>
                 <td class="text-center"><span class="count-badge">${row.count}</span></td>
                 <td class="text-end pe-4">
                     <select class="form-select form-select-sm action-select d-inline-block" style="width: auto; max-width: 200px;" data-email="${row.email}" onchange="handleActionChange(this)">
-                        <option value="none" selected>Choose action...</option>
+                        <option value="none">Choose action...</option>
                         <option value="delete" class="text-danger">Delete</option>
                         <optgroup label="Send to Folder">
-                            <option value="new_label">+ Create New Label</option>
                             ${labelOptionsHTML}
                         </optgroup>
                     </select>
                 </td>
             `;
+            // Set value after creating to ensure correct state
+            const select = tr.querySelector('select');
+            select.value = selectedValue;
+            
             tbody.appendChild(tr);
         });
 
         document.getElementById('page-info').innerText = `${start + 1}-${Math.min(end, filteredData.length)} of ${filteredData.length}`;
         document.getElementById('pagination-controls').style.setProperty('display', 'flex', 'important');
-        document.getElementById('jumpToPage').value = currentPage; // Wait, removed jump input in new UI for cleaner look, sticking to arrows
     }
 
     function changeRowsPerPage() {
@@ -323,13 +354,43 @@
 
     function updateSelection() {
         const count = document.querySelectorAll('.row-checkbox:checked').length;
+        const bulkControls = document.getElementById('bulk-controls');
+        const standardControls = document.getElementById('standard-controls');
         const indicator = document.getElementById('selection-count');
+        
         if (count > 0) {
-            indicator.style.display = 'block';
+            bulkControls.style.setProperty('display', 'flex', 'important');
+            standardControls.style.display = 'none'; // Hide search to make room
             indicator.innerText = `${count} Selected`;
         } else {
-            indicator.style.display = 'none';
+            bulkControls.style.setProperty('display', 'none', 'important');
+            standardControls.style.display = 'flex';
         }
+    }
+
+    // --- BULK ACTION LOGIC (THE FIX) ---
+    function populateBulkDropdown() {
+        const ul = document.getElementById('bulk-label-dropdown');
+        ul.innerHTML = existingLabels.filter(l => l.type === 'user').map(l => 
+            `<li><a class="dropdown-item" href="#" onclick="applyBulkRowAction('label:${l.id}')">${l.name}</a></li>`
+        ).join('');
+    }
+
+    function applyBulkRowAction(actionValue) {
+        // 1. Get all checked boxes
+        const checkboxes = document.querySelectorAll('.row-checkbox:checked');
+        
+        checkboxes.forEach(cb => {
+            // 2. Find the row and the select element
+            const tr = cb.closest('tr');
+            const select = tr.querySelector('.action-select');
+            
+            // 3. Update Visuals
+            select.value = actionValue;
+            
+            // 4. Update Logic (Action Queue)
+            handleActionChange(select);
+        });
     }
 
     function downloadCSV() {
@@ -379,11 +440,9 @@
                 statusText.innerText = `Scanning Inbox (${data.percent}%)`;
                 progressDetail.innerText = `Processed ${data.processed} of ${data.total} emails...`;
             } else if (data.status === 'complete') {
-                // --- UI UPDATE: REPLACE PROGRESS WITH TOTAL COUNT ---
                 allData = data.data;
                 const totalEmails = allData.reduce((sum, item) => sum + item.count, 0);
                 
-                // Replace the entire Status/Progress div with the Result Text
                 const heroContent = document.getElementById('hero-status-content');
                 heroContent.innerHTML = `
                     <h1 class="hero-title" style="margin-top: 10px;">
@@ -406,7 +465,15 @@
         if (val === 'new_label') {
             currentEditingRowEmail = email;
             new bootstrap.Modal(document.getElementById('labelModal')).show();
-        } else { delete pendingActions[email]; }
+        } else if (val.startsWith('label:')) {
+            const labelId = val.split(':')[1];
+            const labelName = selectElem.options[selectElem.selectedIndex].text;
+            pendingActions[email] = { action: 'label', labelId: labelId, labelName: labelName };
+        } else if (val === 'delete') {
+            pendingActions[email] = { action: 'delete' };
+        } else { 
+            delete pendingActions[email]; 
+        }
     }
     
     function toggleNestDropdown() { document.getElementById('parentLabelSelect').disabled = !document.getElementById('nestLabelCheck').checked; }
@@ -438,16 +505,12 @@
     async function applyChanges() {
         const selects = document.querySelectorAll('.action-select');
         const actions = [];
-        selects.forEach(s => {
-            if (s.value === 'none') return;
-            const email = s.dataset.email;
-            if (pendingActions[email] && s.value === 'temp_custom') actions.push({ email: email, ...pendingActions[email] });
-            else if (s.value === 'delete') actions.push({ email: email, action: 'delete' });
-            else if (s.value.startsWith('label:')) {
-                const labelName = s.options[s.selectedIndex].text;
-                actions.push({ email: email, action: 'label', labelId: s.value.split(':')[1], labelName: labelName });
-            }
-        });
+        
+        // We iterate through pendingActions because it's the source of truth
+        for (const [email, actionData] of Object.entries(pendingActions)) {
+            actions.push({ email: email, ...actionData });
+        }
+
         if(actions.length === 0) return alert("No actions selected");
 
         const btn = document.getElementById('apply-btn');

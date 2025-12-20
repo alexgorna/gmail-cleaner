@@ -51,7 +51,7 @@
     
     <div id="progress-container" class="mb-4">
         <div class="d-flex justify-content-between mb-1">
-            <span id="progress-text" class="text-muted small">System ready. Waiting for scan...</span>
+            <span id="progress-text" class="text-muted small">Initializing...</span>
             <span id="progress-percent" class="fw-bold small">0%</span>
         </div>
         <div class="progress" style="height: 8px;">
@@ -165,11 +165,12 @@
     let labelOptionsHTML = "";
     let currentEditingRowEmail = null;
 
-    // --- INIT ---
+    // --- INIT: PARALLEL EXECUTION ---
+    // NO await here. We fire everything at once.
     window.onload = function() {
-        startScanStream(); // Start scan logic immediately
-        fetchUserInfo();   // Background fetch
-        fetchLabelsAndPopulate(); // Background fetch
+        startScanStream();        // 1. Starts immediately (0s delay)
+        fetchUserInfo();          // 2. Background
+        fetchLabelsAndPopulate(); // 3. Background
     };
 
     async function fetchUserInfo() {
@@ -186,8 +187,16 @@
         try {
             const labelRes = await fetch('/api/get_labels');
             existingLabels = await labelRes.json();
-            labelOptionsHTML = existingLabels.filter(l => l.type === 'user').map(l => `<option value="label:${l.id}">${l.name}</option>`).join('');
+            
+            // FIX: Removed the .filter(type === 'user'). Now shows ALL labels.
+            // Sorting to put System labels (like INBOX) at the bottom or top is optional, 
+            // but this ensures the list is not empty.
+            labelOptionsHTML = existingLabels
+                .map(l => `<option value="label:${l.id}">${l.name}</option>`)
+                .join('');
+            
             populateParentLabelSelect();
+            // If table rendered before labels were ready, re-render to populate dropdowns
             if (filteredData.length > 0) renderTable(); 
         } catch(e) { console.error("Label fetch failed", e); }
     }
@@ -310,16 +319,15 @@
 
     // --- STREAMING LOGIC ---
     function startScanStream() {
-        // --- FIX 1: INSTANT UI FEEDBACK (Before network request) ---
         const progressText = document.getElementById('progress-text');
         progressText.innerText = "Initiating connection...";
         logToScanDebugger("Contacting server...", "info");
-        // -----------------------------------------------------------
 
         const evtSource = new EventSource("/api/scan_stream");
         const progressBar = document.getElementById('progress-bar-inner');
         
         evtSource.onmessage = function(event) {
+            // Filter out the padding
             if (!event.data.trim().startsWith('{')) return;
             
             const data = JSON.parse(event.data);
@@ -359,11 +367,12 @@
     function toggleNestDropdown() { document.getElementById('parentLabelSelect').disabled = !document.getElementById('nestLabelCheck').checked; }
     function populateParentLabelSelect() {
         const select = document.getElementById('parentLabelSelect');
-        existingLabels.forEach(l => { if(l.type === 'user') {
+        existingLabels.forEach(l => { 
+            // Show all folders in parent select too
             const opt = document.createElement('option');
             opt.value = l.id; opt.text = l.name;
             select.appendChild(opt);
-        }});
+        });
     }
     function confirmLabelCreation() {
         const name = document.getElementById('newLabelName').value;

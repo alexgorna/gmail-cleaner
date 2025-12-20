@@ -156,8 +156,7 @@ def create_label():
         created = service.users().labels().create(userId='me', body=label_object).execute()
         return jsonify(created)
     except HttpError as error:
-        # If exists, return the existing one so the UI can proceed
-        if error.resp.status == 409:
+        if error.resp.status == 409: # Already exists
             try:
                 results = service.users().labels().list(userId='me').execute()
                 for l in results.get('labels', []):

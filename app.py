@@ -180,7 +180,7 @@ def scan_stream():
             return
 
         messages = []
-        yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...'})}\n\n"
+        yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...', 'log': 'Starting connection to Gmail API...'})}\n\n"
         
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=MAX_MESSAGES_PER_PAGE)
         
@@ -192,10 +192,10 @@ def scan_stream():
                     response = request.execute()
                     msgs = response.get('messages', [])
                     messages.extend(msgs)
-                    yield f"data: {json.dumps({'status': 'counting', 'count': len(messages)})}\n\n"
+                    yield f"data: {json.dumps({'status': 'counting', 'count': len(messages), 'log': f'Fetched page {page_num} ({len(msgs)} items). Total: {len(messages)}'})}\n\n"
                     
                     if len(messages) > MAX_INBOX_SCAN_LIMIT:
-                        yield f"data: {json.dumps({'error': f'Inbox too large ({len(messages)}+). Limit is {MAX_INBOX_SCAN_LIMIT}.'})}\n\n"
+                        yield f"data: {json.dumps({'error': f'Inbox too large ({len(messages)}+). Limit is {MAX_INBOX_SCAN_LIMIT}. Please archive emails.'})}\n\n"
                         return
 
                     request = service.users().messages().list_next(request, response)
@@ -207,7 +207,7 @@ def scan_stream():
             page_num += 1
 
         total_messages = len(messages)
-        yield f"data: {json.dumps({'log': f'Found {total_messages} emails. Scanning...'})}\n\n"
+        yield f"data: {json.dumps({'log': f'List complete. Found {total_messages} emails. Starting Detail Scan...', 'level': 'success'})}\n\n"
         
         if total_messages == 0:
             yield f"data: {json.dumps({'status': 'complete', 'data': []})}\n\n"
@@ -238,8 +238,11 @@ def scan_stream():
             if current_batch_num % 5 == 0:
                 yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed.'})}\n\n"
 
-            progress = int((min(i + BATCH_SIZE, total_messages) / total_messages) * 100)
-            yield f"data: {json.dumps({'status': 'progress', 'percent': progress})}\n\n"
+            # FIX: Restored 'processed' and 'total' fields to prevent "undefined" error
+            current_processed = min(i + BATCH_SIZE, total_messages)
+            progress = int((current_processed / total_messages) * 100)
+            
+            yield f"data: {json.dumps({'status': 'progress', 'processed': current_processed, 'total': total_messages, 'percent': progress})}\n\n"
             time.sleep(BATCH_SLEEP_SECONDS)
 
         if senders:
@@ -248,7 +251,7 @@ def scan_stream():
         else:
             result_data = []
             
-        yield f"data: {json.dumps({'status': 'complete', 'data': result_data})}\n\n"
+        yield f"data: {json.dumps({'status': 'complete', 'data': result_data, 'log': 'Analysis Complete. Rendering table...', 'level': 'success'})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 

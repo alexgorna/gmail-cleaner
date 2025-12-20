@@ -6,9 +6,11 @@ import time
 import random
 import socket
 import httplib2
+import redis
 import google_auth_httplib2
 from werkzeug.middleware.proxy_fix import ProxyFix
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response, stream_with_context
+from flask_session import Session
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -17,8 +19,24 @@ from googleapiclient.errors import HttpError
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_key_for_testing_only')
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
-os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
+
+# FIX 1: OAuth Security Risk - Only enable insecure transport in dev
+if os.environ.get('ENVIRONMENT') != 'production':
+    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+    os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
+
+# FIX 4: Session Cookie Bomb - Use Redis or Filesystem
+app.config['SESSION_PERMANENT'] = False
+app.config['SESSION_USE_SIGNER'] = True
+
+if os.environ.get('REDIS_URL'):
+    app.config['SESSION_TYPE'] = 'redis'
+    app.config['SESSION_REDIS'] = redis.from_url(os.environ.get('REDIS_URL'))
+else:
+    # Fallback for local dev without Redis
+    app.config['SESSION_TYPE'] = 'filesystem'
+
+Session(app)
 
 CLIENT_SECRETS_FILE = "client_secret.json"
 SCOPES = [
@@ -97,8 +115,6 @@ def scan_stream():
         
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...', 'log': 'Starting connection to Gmail API...'})}\n\n"
         
-        # --- PHASE 1: LIST MESSAGES ---
-        # Fetching list is usually fast, so 500 is fine here
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
         
         page_num = 1
@@ -129,12 +145,7 @@ def scan_stream():
             yield f"data: {json.dumps({'status': 'complete', 'data': []})}\n\n"
             return
 
-        # --- PHASE 2: FETCH DETAILS ---
         senders = []
-        
-        # PERFORMANCE TUNING:
-        # Batch Size: 18 (Safe under the ~25 concurrent limit)
-        # Sleep: 0.2s (Fast enough, but polite enough to avoid 429 errors)
         batch_size = 18 
         total_batches = (total_messages // batch_size) + 1
         
@@ -176,7 +187,6 @@ def scan_stream():
             if not batch_success:
                  yield f"data: {json.dumps({'log': f'CRITICAL: Batch {current_batch_num} dropped completely.', 'level': 'error'})}\n\n"
 
-            # --- REPAIR LOOP ---
             if batch_failures:
                 err_snippet = first_error_msg if first_error_msg else "Unknown Error"
                 yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} items hit rate limit. Repairing...', 'level': 'warn'})}\n\n"
@@ -184,7 +194,7 @@ def scan_stream():
                 count_repaired = 0
                 for failed_id in batch_failures:
                     count_repaired += 1
-                    time.sleep(0.3) # Gentle sleep during repairs
+                    time.sleep(0.3) 
                     
                     retry_success = False
                     for retry_att in range(3):
@@ -220,10 +230,8 @@ def scan_stream():
             }
             yield f"data: {json.dumps(progress_data)}\n\n"
             
-            # THE SPEED FIX: Reduced from 1.0s to 0.2s
             time.sleep(0.2)
 
-        # --- PHASE 3: AGGREGATE ---
         df = pd.DataFrame(senders, columns=['email'])
         if not df.empty:
             counts = df['email'].value_counts().reset_index()
@@ -268,17 +276,34 @@ def apply_actions():
             email = item['email']
             action_type = item['action']
             yield json.dumps({"msg": f"Processing: {email}..."}) + "\n"
-            time.sleep(0.2) # Faster actions too
+            time.sleep(0.2) 
 
             try:
+                # FIX 2 & 3: Pagination + Error Handling
                 if action_type == 'delete':
                     yield json.dumps({"msg": "  - Moving emails to Trash..."}) + "\n"
                     msgs = []
-                    list_req = service.users().messages().list(userId='me', q=f"from:{email}", maxResults=500)
+                    
+                    # Pagination Loop
+                    next_page_token = None
                     try:
-                        resp = execute_with_retry(list_req)
-                        msgs = resp.get('messages', [])
-                    except: pass 
+                        while True:
+                            list_req = service.users().messages().list(
+                                userId='me', 
+                                q=f"from:{email}", 
+                                maxResults=500,
+                                pageToken=next_page_token
+                            )
+                            resp = execute_with_retry(list_req)
+                            batch_msgs = resp.get('messages', [])
+                            msgs.extend(batch_msgs)
+                            
+                            next_page_token = resp.get('nextPageToken')
+                            if not next_page_token:
+                                break
+                            yield json.dumps({"msg": f"    ...found {len(msgs)} emails so far..."}) + "\n"
+                    except Exception as e:
+                        yield json.dumps({"msg": f"  - Warning: Failed to fetch all messages: {str(e)}"}) + "\n"
 
                     if msgs:
                         all_ids = [m['id'] for m in msgs]
@@ -293,8 +318,8 @@ def apply_actions():
                                 total_trashed += len(chunk_ids)
                                 yield json.dumps({"msg": f"    ...trashed {total_trashed} so far..."}) + "\n"
                                 time.sleep(0.2) 
-                            except:
-                                yield json.dumps({"msg": "    ...chunk failed, skipping..."}) + "\n"
+                            except Exception as e:
+                                yield json.dumps({"msg": f"    ...chunk failed: {str(e)}"}) + "\n"
                         yield json.dumps({"msg": f"  - SUCCESS: Trashed {total_trashed} emails total."}) + "\n"
                     else:
                         yield json.dumps({"msg": "  - No emails found to delete."}) + "\n"
@@ -317,7 +342,8 @@ def apply_actions():
                                 lbls = resp.get('labels', [])
                                 existing = next((l for l in lbls if l['name'].lower() == label_name.lower()), None)
                                 if existing: label_id = existing['id']
-                            except: pass
+                            except Exception as e:
+                                yield json.dumps({"msg": f"  - Error finding label: {str(e)}"}) + "\n"
                     else:
                         label_id = item['labelId']
                         if 'labelName' in item:
@@ -337,11 +363,27 @@ def apply_actions():
 
                         yield json.dumps({"msg": "  - Moving existing emails..."}) + "\n"
                         msgs = []
-                        list_req = service.users().messages().list(userId='me', q=f"from:{email}", maxResults=500)
+                        
+                        # Pagination Loop for Labels
+                        next_page_token = None
                         try:
-                            resp = execute_with_retry(list_req)
-                            msgs = resp.get('messages', [])
-                        except: pass
+                            while True:
+                                list_req = service.users().messages().list(
+                                    userId='me', 
+                                    q=f"from:{email}", 
+                                    maxResults=500,
+                                    pageToken=next_page_token
+                                )
+                                resp = execute_with_retry(list_req)
+                                batch_msgs = resp.get('messages', [])
+                                msgs.extend(batch_msgs)
+                                
+                                next_page_token = resp.get('nextPageToken')
+                                if not next_page_token:
+                                    break
+                                yield json.dumps({"msg": f"    ...found {len(msgs)} emails so far..."}) + "\n"
+                        except Exception as e:
+                            yield json.dumps({"msg": f"  - Warning: Failed to fetch all messages: {str(e)}"}) + "\n"
 
                         if msgs:
                             all_ids = [m['id'] for m in msgs]
@@ -355,8 +397,8 @@ def apply_actions():
                                     total_moved += len(chunk_ids)
                                     yield json.dumps({"msg": f"    ...moved {total_moved} so far..."}) + "\n"
                                     time.sleep(0.2) 
-                                except:
-                                    yield json.dumps({"msg": "    ...chunk failed, skipping..."}) + "\n"
+                                except Exception as e:
+                                    yield json.dumps({"msg": f"    ...chunk failed: {str(e)}"}) + "\n"
 
                             yield json.dumps({"msg": f"  - SUCCESS: Moved {total_moved} emails total."}) + "\n"
                         else:

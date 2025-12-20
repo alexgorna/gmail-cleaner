@@ -7,3 +7,5 @@ pandas
 httplib2
 gunicorn
 werkzeug
+flask-session
+redis

@@ -3,8 +3,6 @@ import json
 import pandas as pd
 import re
 import time
-import random
-import socket
 import httplib2
 import redis
 import google_auth_httplib2
@@ -13,6 +11,7 @@ from flask import Flask, render_template, request, redirect, url_for, session, j
 from flask_session import Session
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -20,12 +19,20 @@ app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_key_for_testing_only')
 
-# FIX 1: OAuth Security Risk - Only enable insecure transport in dev
+# --- CONFIGURATION & CONSTANTS ---
+
+# API Rate Limiting & Pagination Constants
+BATCH_SIZE = 18              # Safe limit for batch requests (limit is ~25)
+BATCH_SLEEP_SECONDS = 0.2    # Rate limiting pause
+MAX_RETRIES = 5              # Connection retry attempts
+MAX_MESSAGES_PER_PAGE = 500  # Max Gmail IDs to fetch per list request
+
+# OAuth Security Risk - Only enable insecure transport in dev
 if os.environ.get('ENVIRONMENT') != 'production':
     os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
     os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
 
-# FIX 4: Session Cookie Bomb - Use Redis or Filesystem
+# Session Storage Configuration
 app.config['SESSION_PERMANENT'] = False
 app.config['SESSION_USE_SIGNER'] = True
 
@@ -33,7 +40,6 @@ if os.environ.get('REDIS_URL'):
     app.config['SESSION_TYPE'] = 'redis'
     app.config['SESSION_REDIS'] = redis.from_url(os.environ.get('REDIS_URL'))
 else:
-    # Fallback for local dev without Redis
     app.config['SESSION_TYPE'] = 'filesystem'
 
 Session(app)
@@ -52,9 +58,31 @@ if os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'):
     with open('client_secret.json', 'w') as f:
         f.write(os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'))
 
+# --- AUTH HELPER FUNCTIONS ---
+
 def get_creds():
-    if 'credentials' not in session: return None
-    return Credentials(**session['credentials'])
+    if 'credentials' not in session: 
+        return None
+    creds = Credentials(**session['credentials'])
+    
+    # Auto-refresh expired tokens
+    if creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+            # Update session with new token
+            session['credentials'] = {
+                'token': creds.token,
+                'refresh_token': creds.refresh_token,
+                'token_uri': creds.token_uri,
+                'client_id': creds.client_id,
+                'client_secret': creds.client_secret,
+                'scopes': creds.scopes
+            }
+        except Exception as e:
+            print(f"Token refresh failed: {e}")
+            return None
+            
+    return creds
 
 def get_service():
     creds = get_creds()
@@ -62,6 +90,8 @@ def get_service():
     http = httplib2.Http(timeout=30)
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
     return build('gmail', 'v1', http=authorized_http)
+
+# --- ROUTES ---
 
 @app.route('/')
 def index():
@@ -104,6 +134,21 @@ def logout():
 def api_user_info():
     return jsonify(session.get('user_info', {}))
 
+@app.route('/api/get_labels')
+def get_labels():
+    service = get_service()
+    if not service: return jsonify([])
+    try:
+        results = service.users().labels().list(userId='me').execute()
+        labels = results.get('labels', [])
+        labels.sort(key=lambda x: x['name'].lower())
+        return jsonify(labels)
+    except Exception as e:
+        print(f"Error fetching labels: {e}")
+        return jsonify([])
+
+# --- CORE LOGIC STREAMS ---
+
 @app.route('/api/scan_stream')
 def scan_stream():
     if not get_creds(): 
@@ -115,12 +160,13 @@ def scan_stream():
         
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...', 'log': 'Starting connection to Gmail API...'})}\n\n"
         
-        request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
+        # Phase 1: List Messages
+        request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=MAX_MESSAGES_PER_PAGE)
         
         page_num = 1
         while request is not None:
             page_success = False
-            for attempt in range(5):
+            for attempt in range(MAX_RETRIES):
                 try:
                     response = request.execute()
                     msgs = response.get('messages', [])
@@ -130,7 +176,7 @@ def scan_stream():
                     page_success = True
                     break 
                 except Exception as e:
-                    yield f"data: {json.dumps({'log': f'Page {page_num} failed: {str(e)}. Retrying ({attempt+1}/5)...', 'level': 'warn'})}\n\n"
+                    yield f"data: {json.dumps({'log': f'Page {page_num} failed: {str(e)}. Retrying ({attempt+1}/{MAX_RETRIES})...', 'level': 'warn'})}\n\n"
                     time.sleep(2 ** attempt)
             
             if not page_success:
@@ -145,13 +191,13 @@ def scan_stream():
             yield f"data: {json.dumps({'status': 'complete', 'data': []})}\n\n"
             return
 
+        # Phase 2: Fetch Details
         senders = []
-        batch_size = 18 
-        total_batches = (total_messages // batch_size) + 1
+        total_batches = (total_messages // BATCH_SIZE) + 1
         
-        for i in range(0, total_messages, batch_size):
-            chunk = messages[i:i + batch_size]
-            current_batch_num = (i // batch_size) + 1
+        for i in range(0, total_messages, BATCH_SIZE):
+            chunk = messages[i:i + BATCH_SIZE]
+            current_batch_num = (i // BATCH_SIZE) + 1
             batch_failures = [] 
             first_error_msg = None
             
@@ -175,7 +221,7 @@ def scan_stream():
                           request_id=msg['id'])
             
             batch_success = False
-            for attempt in range(5):
+            for attempt in range(MAX_RETRIES):
                 try:
                     batch.execute()
                     batch_success = True
@@ -187,8 +233,8 @@ def scan_stream():
             if not batch_success:
                  yield f"data: {json.dumps({'log': f'CRITICAL: Batch {current_batch_num} dropped completely.', 'level': 'error'})}\n\n"
 
+            # Repair Loop
             if batch_failures:
-                err_snippet = first_error_msg if first_error_msg else "Unknown Error"
                 yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} items hit rate limit. Repairing...', 'level': 'warn'})}\n\n"
                 
                 count_repaired = 0
@@ -221,7 +267,7 @@ def scan_stream():
                 if current_batch_num % 5 == 0:
                     yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed perfectly.'})}\n\n"
 
-            processed_count = min(i + batch_size, total_messages)
+            processed_count = min(i + BATCH_SIZE, total_messages)
             progress_data = {
                 'status': 'progress',
                 'processed': processed_count,
@@ -230,8 +276,9 @@ def scan_stream():
             }
             yield f"data: {json.dumps(progress_data)}\n\n"
             
-            time.sleep(0.2)
+            time.sleep(BATCH_SLEEP_SECONDS)
 
+        # Phase 3: Aggregate
         df = pd.DataFrame(senders, columns=['email'])
         if not df.empty:
             counts = df['email'].value_counts().reset_index()
@@ -244,18 +291,6 @@ def scan_stream():
         yield f"data: {json.dumps({'status': 'complete', 'data': result_data, 'log': 'Analysis Complete. Rendering table...', 'level': 'success'})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
-
-@app.route('/api/get_labels')
-def get_labels():
-    service = get_service()
-    if not service: return jsonify([])
-    try:
-        results = service.users().labels().list(userId='me').execute()
-        labels = results.get('labels', [])
-        labels.sort(key=lambda x: x['name'].lower())
-        return jsonify(labels)
-    except:
-        return jsonify([])
 
 @app.route('/api/apply_actions', methods=['POST'])
 def apply_actions():
@@ -276,10 +311,9 @@ def apply_actions():
             email = item['email']
             action_type = item['action']
             yield json.dumps({"msg": f"Processing: {email}..."}) + "\n"
-            time.sleep(0.2) 
+            time.sleep(BATCH_SLEEP_SECONDS) 
 
             try:
-                # FIX 2 & 3: Pagination + Error Handling
                 if action_type == 'delete':
                     yield json.dumps({"msg": "  - Moving emails to Trash..."}) + "\n"
                     msgs = []
@@ -291,7 +325,7 @@ def apply_actions():
                             list_req = service.users().messages().list(
                                 userId='me', 
                                 q=f"from:{email}", 
-                                maxResults=500,
+                                maxResults=MAX_MESSAGES_PER_PAGE,
                                 pageToken=next_page_token
                             )
                             resp = execute_with_retry(list_req)
@@ -308,16 +342,16 @@ def apply_actions():
                     if msgs:
                         all_ids = [m['id'] for m in msgs]
                         total_trashed = 0
-                        CHUNK_SIZE = 18 
-                        for i in range(0, len(all_ids), CHUNK_SIZE):
-                            chunk_ids = all_ids[i:i + CHUNK_SIZE]
+                        
+                        for i in range(0, len(all_ids), BATCH_SIZE):
+                            chunk_ids = all_ids[i:i + BATCH_SIZE]
                             try:
                                 execute_with_retry(service.users().messages().batchModify(
                                     userId='me', body={'ids': chunk_ids, 'addLabelIds': ['TRASH']}
                                 ))
                                 total_trashed += len(chunk_ids)
                                 yield json.dumps({"msg": f"    ...trashed {total_trashed} so far..."}) + "\n"
-                                time.sleep(0.2) 
+                                time.sleep(BATCH_SLEEP_SECONDS) 
                             except Exception as e:
                                 yield json.dumps({"msg": f"    ...chunk failed: {str(e)}"}) + "\n"
                         yield json.dumps({"msg": f"  - SUCCESS: Trashed {total_trashed} emails total."}) + "\n"
@@ -371,7 +405,7 @@ def apply_actions():
                                 list_req = service.users().messages().list(
                                     userId='me', 
                                     q=f"from:{email}", 
-                                    maxResults=500,
+                                    maxResults=MAX_MESSAGES_PER_PAGE,
                                     pageToken=next_page_token
                                 )
                                 resp = execute_with_retry(list_req)
@@ -388,15 +422,15 @@ def apply_actions():
                         if msgs:
                             all_ids = [m['id'] for m in msgs]
                             total_moved = 0
-                            CHUNK_SIZE = 18
-                            for i in range(0, len(all_ids), CHUNK_SIZE):
-                                chunk_ids = all_ids[i:i + CHUNK_SIZE]
+                            
+                            for i in range(0, len(all_ids), BATCH_SIZE):
+                                chunk_ids = all_ids[i:i + BATCH_SIZE]
                                 batch_body = {'ids': chunk_ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}
                                 try:
                                     execute_with_retry(service.users().messages().batchModify(userId='me', body=batch_body))
                                     total_moved += len(chunk_ids)
                                     yield json.dumps({"msg": f"    ...moved {total_moved} so far..."}) + "\n"
-                                    time.sleep(0.2) 
+                                    time.sleep(BATCH_SLEEP_SECONDS) 
                                 except Exception as e:
                                     yield json.dumps({"msg": f"    ...chunk failed: {str(e)}"}) + "\n"
 

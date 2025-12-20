@@ -9,6 +9,7 @@ import google_auth_httplib2
 from werkzeug.middleware.proxy_fix import ProxyFix
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response, stream_with_context
 from flask_session import Session
+from flask_wtf.csrf import CSRFProtect
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -43,6 +44,7 @@ else:
     app.config['SESSION_TYPE'] = 'filesystem'
 
 Session(app)
+csrf = CSRFProtect(app)
 
 CLIENT_SECRETS_FILE = "client_secret.json"
 SCOPES = [

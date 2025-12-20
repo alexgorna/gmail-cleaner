@@ -92,14 +92,18 @@ def scan_stream():
         return Response("data: " + json.dumps({'error': 'Not logged in'}) + "\n\n", mimetype='text/event-stream')
 
     def generate():
+        # FIX 1: Yield IMMEDIATELY before doing any work
+        yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...'})}\n\n"
+        
         service = get_service()
         messages = []
         
-        yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...', 'log': 'Starting connection to Gmail API...'})}\n\n"
+        # FIX 2: Give feedback that we are fetching the list
+        yield f"data: {json.dumps({'status': 'init', 'message': 'Fetching email list...'})}\n\n"
         
         # --- PHASE 1: LIST MESSAGES ---
-        # Fetching list is usually fast, so 500 is fine here
-        request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
+        # FIX 3: Reduced maxResults from 500 -> 250 to get faster visual updates
+        request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=250)
         
         page_num = 1
         while request is not None:
@@ -109,6 +113,7 @@ def scan_stream():
                     response = request.execute()
                     msgs = response.get('messages', [])
                     messages.extend(msgs)
+                    # This update will now happen roughly twice as often
                     yield f"data: {json.dumps({'status': 'counting', 'count': len(messages), 'log': f'Fetched page {page_num} ({len(msgs)} items). Total: {len(messages)}'})}\n\n"
                     request = service.users().messages().list_next(request, response)
                     page_success = True
@@ -131,10 +136,6 @@ def scan_stream():
 
         # --- PHASE 2: FETCH DETAILS ---
         senders = []
-        
-        # PERFORMANCE TUNING:
-        # Batch Size: 18 (Safe under the ~25 concurrent limit)
-        # Sleep: 0.2s (Fast enough, but polite enough to avoid 429 errors)
         batch_size = 18 
         total_batches = (total_messages // batch_size) + 1
         
@@ -184,7 +185,7 @@ def scan_stream():
                 count_repaired = 0
                 for failed_id in batch_failures:
                     count_repaired += 1
-                    time.sleep(0.3) # Gentle sleep during repairs
+                    time.sleep(0.3) 
                     
                     retry_success = False
                     for retry_att in range(3):
@@ -220,7 +221,6 @@ def scan_stream():
             }
             yield f"data: {json.dumps(progress_data)}\n\n"
             
-            # THE SPEED FIX: Reduced from 1.0s to 0.2s
             time.sleep(0.2)
 
         # --- PHASE 3: AGGREGATE ---
@@ -268,7 +268,7 @@ def apply_actions():
             email = item['email']
             action_type = item['action']
             yield json.dumps({"msg": f"Processing: {email}..."}) + "\n"
-            time.sleep(0.2) # Faster actions too
+            time.sleep(0.2) 
 
             try:
                 if action_type == 'delete':

@@ -98,6 +98,7 @@ def scan_stream():
         yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...', 'log': 'Starting connection to Gmail API...'})}\n\n"
         
         # --- PHASE 1: LIST MESSAGES ---
+        # We fetch 500 at a time to be safe
         request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=500)
         
         page_num = 1
@@ -130,7 +131,9 @@ def scan_stream():
 
         # --- PHASE 2: FETCH DETAILS ---
         senders = []
-        batch_size = 25
+        
+        # FIX 1: Reduced Batch Size from 25 -> 10 to avoid "Too many concurrent requests"
+        batch_size = 10
         total_batches = (total_messages // batch_size) + 1
         
         for i in range(0, total_messages, batch_size):
@@ -173,13 +176,15 @@ def scan_stream():
 
             # --- REPAIR LOOP ---
             if batch_failures:
-                # Log the reason for failure to help debug
                 err_snippet = first_error_msg if first_error_msg else "Unknown Error"
-                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} failed ({err_snippet}). Repairing...', 'level': 'warn'})}\n\n"
+                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} items hit rate limit. Slowing down & repairing...', 'level': 'warn'})}\n\n"
                 
                 count_repaired = 0
                 for failed_id in batch_failures:
                     count_repaired += 1
+                    # Extra sleep during repairs to be super gentle
+                    time.sleep(0.5) 
+                    
                     retry_success = False
                     for retry_att in range(3):
                         try:
@@ -197,13 +202,11 @@ def scan_stream():
                     if not retry_success:
                          yield f"data: {json.dumps({'log': f'Permanently failed to fetch message {failed_id}.', 'level': 'error'})}\n\n"
 
-                    # Update progress bar DURING repairs
                     current_absolute = i + (len(chunk) - len(batch_failures)) + count_repaired
                     current_percent = int((current_absolute / total_messages) * 100)
                     yield f"data: {json.dumps({'status': 'progress', 'processed': current_absolute, 'total': total_messages, 'percent': current_percent})}\n\n"
             
             else:
-                # Optional: Only log every 5 batches to reduce noise, or keep it if you like seeing progress
                 if current_batch_num % 5 == 0:
                     yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed perfectly.'})}\n\n"
 
@@ -216,9 +219,8 @@ def scan_stream():
             }
             yield f"data: {json.dumps(progress_data)}\n\n"
             
-            # --- THE FIX: Throttling ---
-            # Sleep 0.1s to prevent 429 Rate Limit errors
-            time.sleep(0.1)
+            # FIX 2: Increased sleep between batches from 0.1s -> 1.0s
+            time.sleep(1.0)
 
         # --- PHASE 3: AGGREGATE ---
         df = pd.DataFrame(senders, columns=['email'])
@@ -280,7 +282,7 @@ def apply_actions():
                     if msgs:
                         all_ids = [m['id'] for m in msgs]
                         total_trashed = 0
-                        CHUNK_SIZE = 25 
+                        CHUNK_SIZE = 10  # Reduced this too just in case
                         for i in range(0, len(all_ids), CHUNK_SIZE):
                             chunk_ids = all_ids[i:i + CHUNK_SIZE]
                             try:
@@ -289,6 +291,7 @@ def apply_actions():
                                 ))
                                 total_trashed += len(chunk_ids)
                                 yield json.dumps({"msg": f"    ...trashed {total_trashed} so far..."}) + "\n"
+                                time.sleep(0.5) # Added throttle here too
                             except:
                                 yield json.dumps({"msg": "    ...chunk failed, skipping..."}) + "\n"
                         yield json.dumps({"msg": f"  - SUCCESS: Trashed {total_trashed} emails total."}) + "\n"
@@ -342,7 +345,7 @@ def apply_actions():
                         if msgs:
                             all_ids = [m['id'] for m in msgs]
                             total_moved = 0
-                            CHUNK_SIZE = 25
+                            CHUNK_SIZE = 10 # Reduced for safety
                             for i in range(0, len(all_ids), CHUNK_SIZE):
                                 chunk_ids = all_ids[i:i + CHUNK_SIZE]
                                 batch_body = {'ids': chunk_ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}
@@ -350,6 +353,7 @@ def apply_actions():
                                     execute_with_retry(service.users().messages().batchModify(userId='me', body=batch_body))
                                     total_moved += len(chunk_ids)
                                     yield json.dumps({"msg": f"    ...moved {total_moved} so far..."}) + "\n"
+                                    time.sleep(0.5) # Added throttle
                                 except:
                                     yield json.dumps({"msg": "    ...chunk failed, skipping..."}) + "\n"
 

@@ -99,7 +99,11 @@
         
         /* Logs */
         .console-window { background-color: #1e1e1e; color: #4ade80; font-family: 'SF Mono', Consolas, monospace; font-size: 0.8rem; height: 150px; overflow-y: auto; border-radius: 8px; padding: 15px; margin-top: 20px; display: none; border: 1px solid #333; }
-        .log-error { color: #ef4444; } .log-info { color: #94a3b8; }
+        /* FIX: Added Success and Warn colors */
+        .log-error { color: #ef4444; } 
+        .log-info { color: #94a3b8; }
+        .log-success { color: #22c55e; }
+        .log-warn { color: #facc15; }
         
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
     </style>
@@ -189,7 +193,12 @@
                         </tr>
                     </thead>
                     <tbody id="email-table-body">
-                        <tr><td colspan="4" class="text-center py-5 text-muted">Waiting for scan data...</td></tr>
+                        <tr>
+                            <td colspan="4" class="text-center py-5 text-muted">
+                                <div class="spinner-border text-primary mb-3" role="status"></div>
+                                <div>Loading application data...</div>
+                            </td>
+                        </tr>
                     </tbody>
                 </table>
             </div>
@@ -324,7 +333,6 @@
 
             if(rowClass) tr.className = rowClass;
 
-            // FIX 3: XSS Prevention using textContent
             tr.innerHTML = `
                 <td style="padding-left: 24px;">
                     <input type="checkbox" class="form-check-input row-checkbox" onchange="updateSelection()" ${isDisabled ? 'disabled' : ''}>
@@ -343,7 +351,6 @@
                 </td>
             `;
             
-            // Safely inject email
             tr.querySelector('.email-text').textContent = row.email;
             
             const select = tr.querySelector('select');
@@ -440,7 +447,6 @@
         consoleWin.scrollTop = consoleWin.scrollHeight;
     }
 
-    // FIX 2: EventSource Memory Leak Protection
     let scanEventSource = null;
 
     function startScanStream() {
@@ -476,7 +482,6 @@
         scanEventSource.onerror = function() { scanEventSource.close(); };
     }
 
-    // Cleanup on page unload
     window.addEventListener('beforeunload', function() {
         if (scanEventSource) scanEventSource.close();
     });
@@ -525,7 +530,6 @@
     }
 
     async function applyChanges() {
-        // FIX 1: Race Condition (Double Submit Prevention)
         const btn = document.getElementById('apply-btn');
         if (btn.disabled) return;
 
@@ -542,7 +546,6 @@
         toggleLogs(); 
         logToScanDebugger("Starting Apply Changes...", "info");
 
-        // --- CSRF TOKEN EXTRACTION ---
         const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
 
         try {

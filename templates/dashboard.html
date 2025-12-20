@@ -234,7 +234,6 @@
             tbody.appendChild(tr);
         });
 
-        // Update Pagination Info
         document.getElementById('page-info').innerText = `${start + 1}-${Math.min(end, filteredData.length)} of ${filteredData.length}`;
         document.getElementById('pagination-controls').style.display = 'flex';
         document.getElementById('jumpToPage').value = currentPage;
@@ -332,9 +331,12 @@
             else if (data.status === 'progress') {
                 progressBar.style.width = data.percent + "%";
                 progressText.innerText = `Scanning ${data.processed} of ${data.total}...`;
+                // --- THE FIX: Update the percentage text label! ---
+                document.getElementById('progress-percent').innerText = data.percent + "%";
             } else if (data.status === 'complete') {
                 progressBar.style.width = "100%";
                 progressText.innerText = "Scan Complete";
+                document.getElementById('progress-percent').innerText = "100%";
                 setTimeout(() => document.getElementById('progress-container').style.display = 'none', 2000);
                 
                 allData = data.data;
@@ -346,7 +348,7 @@
         evtSource.onerror = function() { evtSource.close(); };
     }
 
-    // --- ACTION LOGIC (Keep existing handlers) ---
+    // --- ACTION LOGIC ---
     function handleActionChange(selectElem) {
         const val = selectElem.value;
         const email = selectElem.dataset.email;
@@ -399,7 +401,7 @@
 
         document.getElementById('apply-btn').disabled = true;
         document.getElementById('apply-btn').innerText = "Processing...";
-        toggleLogs(); // Show logs automatically
+        toggleLogs(); 
         logToScanDebugger("Starting Apply Changes...", "info");
 
         try {

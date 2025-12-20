@@ -162,7 +162,7 @@ def get_labels():
 # --- CORE LOGIC STREAMS ---
 
 @app.route('/api/scan_stream')
-@csrf.exempt  # FIX 1: Exempt SSE endpoint (EventSource cannot send CSRF headers)
+@csrf.exempt  # FIX 1: Exempt SSE endpoint
 def scan_stream():
     if not get_creds(): 
         return Response("data: " + json.dumps({'error': 'Not logged in'}) + "\n\n", mimetype='text/event-stream')
@@ -319,13 +319,16 @@ def apply_actions():
             yield json.dumps({"msg": "ERROR: Authentication failed. Please reload and login."}) + "\n"
             return
 
+        # FIX 7: Consistent Retry Logic using Constants
         def execute_with_retry(request_obj):
-            for attempt in range(4):
+            for attempt in range(MAX_RETRIES):
                 try:
                     return request_obj.execute()
                 except Exception as e:
-                    time.sleep(1 + attempt)
-            raise Exception("Connection failed after retries")
+                    if attempt < MAX_RETRIES - 1:
+                        time.sleep(1 + attempt)
+                    else:
+                        raise Exception(f"Request failed after {MAX_RETRIES} retries: {str(e)}")
 
         yield json.dumps({"msg": "Starting to process actions..."}) + "\n"
 

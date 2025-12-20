@@ -238,11 +238,11 @@ def scan_stream():
             if current_batch_num % 5 == 0:
                 yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed.'})}\n\n"
 
-            # FIX: Restored 'processed' and 'total' fields to prevent "undefined" error
+            # CRITICAL: Ensuring fields exist for progress bar
             current_processed = min(i + BATCH_SIZE, total_messages)
             progress = int((current_processed / total_messages) * 100)
-            
             yield f"data: {json.dumps({'status': 'progress', 'processed': current_processed, 'total': total_messages, 'percent': progress})}\n\n"
+            
             time.sleep(BATCH_SLEEP_SECONDS)
 
         if senders:
@@ -293,7 +293,9 @@ def apply_actions():
                             try: execute_with_retry(service.users().messages().batchModify(userId='me', body={'ids': ids, 'addLabelIds': ['TRASH']}))
                             except: pass
                             time.sleep(BATCH_SLEEP_SECONDS)
-                    yield json.dumps({"msg": "  - Emails deleted."}) + "\n"
+                    
+                    # FIX: Emit real-time row_complete event
+                    yield json.dumps({"status": "row_complete", "email": email, "action": "delete", "msg": "  - Emails deleted."}) + "\n"
 
                 elif action_type == 'label':
                     label_id = item['labelId']
@@ -317,7 +319,9 @@ def apply_actions():
                             try: execute_with_retry(service.users().messages().batchModify(userId='me', body={'ids': ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}))
                             except: pass
                             time.sleep(BATCH_SLEEP_SECONDS)
-                        yield json.dumps({"msg": f"  - Moved {len(msgs)} emails."}) + "\n"
+                        
+                        # FIX: Emit real-time row_complete event
+                        yield json.dumps({"status": "row_complete", "email": email, "action": f"label:{label_id}", "msg": f"  - Moved {len(msgs)} emails."}) + "\n"
             except Exception as e:
                 yield json.dumps({"msg": f"Error: {str(e)}"}) + "\n"
         

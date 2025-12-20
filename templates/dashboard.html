@@ -608,16 +608,30 @@
                     if (!line.trim()) continue;
                     try {
                         const jsonLog = JSON.parse(line);
-                        if (jsonLog.status === 'complete') {
+                        
+                        // Real-time row update logic
+                        if (jsonLog.status === 'row_complete') {
+                            const row = allData.find(d => d.email === jsonLog.email);
+                            if (row) {
+                                row.processedAction = jsonLog.action;
+                                delete pendingActions[jsonLog.email];
+                            }
+                            
+                            const select = document.querySelector(`.action-select[data-email="${jsonLog.email}"]`);
+                            if (select) {
+                                const tr = select.closest('tr');
+                                tr.classList.add('row-processed');
+                                tr.querySelector('input[type="checkbox"]').disabled = true;
+                                select.disabled = true;
+                            }
+                            
+                            if (jsonLog.msg) {
+                                logToScanDebugger(jsonLog.msg, 'success');
+                            }
+                        } 
+                        else if (jsonLog.status === 'complete') {
                             logToScanDebugger("Actions complete.", "success");
-                            actions.forEach(act => {
-                                const item = allData.find(d => d.email === act.email);
-                                if(item) {
-                                    item.processedAction = (act.action === 'delete') ? 'delete' : `label:${act.labelId}`;
-                                    delete pendingActions[act.email];
-                                }
-                            });
-                            renderTable();
+                            renderTable(); 
                             btn.disabled = false;
                             btn.innerText = "Apply Actions";
                         } else if (jsonLog.msg) {

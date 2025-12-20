@@ -137,12 +137,15 @@ def scan_stream():
             chunk = messages[i:i + batch_size]
             current_batch_num = (i // batch_size) + 1
             batch_failures = [] 
+            first_error_msg = None
             
             batch = service.new_batch_http_request()
             
             def batch_callback(request_id, response, exception):
+                nonlocal first_error_msg
                 if exception is not None:
                     batch_failures.append(request_id)
+                    if not first_error_msg: first_error_msg = str(exception)
                 else:
                     headers = response['payload']['headers']
                     from_header = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
@@ -155,7 +158,6 @@ def scan_stream():
                           callback=batch_callback,
                           request_id=msg['id'])
             
-            # Execute Batch
             batch_success = False
             for attempt in range(5):
                 try:
@@ -171,11 +173,13 @@ def scan_stream():
 
             # --- REPAIR LOOP ---
             if batch_failures:
-                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} items failed. Repairing...', 'level': 'warn'})}\n\n"
+                # Log the reason for failure to help debug
+                err_snippet = first_error_msg if first_error_msg else "Unknown Error"
+                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}: {len(batch_failures)} failed ({err_snippet}). Repairing...', 'level': 'warn'})}\n\n"
+                
                 count_repaired = 0
                 for failed_id in batch_failures:
                     count_repaired += 1
-                    
                     retry_success = False
                     for retry_att in range(3):
                         try:
@@ -193,14 +197,15 @@ def scan_stream():
                     if not retry_success:
                          yield f"data: {json.dumps({'log': f'Permanently failed to fetch message {failed_id}.', 'level': 'error'})}\n\n"
 
-                    # --- THE FIX: Update progress bar DURING repairs ---
-                    # Calculate position: base_index + successful_batch_items + currently_repaired_items
+                    # Update progress bar DURING repairs
                     current_absolute = i + (len(chunk) - len(batch_failures)) + count_repaired
                     current_percent = int((current_absolute / total_messages) * 100)
                     yield f"data: {json.dumps({'status': 'progress', 'processed': current_absolute, 'total': total_messages, 'percent': current_percent})}\n\n"
             
             else:
-                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed perfectly.'})}\n\n"
+                # Optional: Only log every 5 batches to reduce noise, or keep it if you like seeing progress
+                if current_batch_num % 5 == 0:
+                    yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed perfectly.'})}\n\n"
 
             processed_count = min(i + batch_size, total_messages)
             progress_data = {
@@ -210,6 +215,10 @@ def scan_stream():
                 'percent': int((processed_count / total_messages) * 100)
             }
             yield f"data: {json.dumps(progress_data)}\n\n"
+            
+            # --- THE FIX: Throttling ---
+            # Sleep 0.1s to prevent 429 Rate Limit errors
+            time.sleep(0.1)
 
         # --- PHASE 3: AGGREGATE ---
         df = pd.DataFrame(senders, columns=['email'])

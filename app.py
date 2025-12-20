@@ -1,11 +1,11 @@
 import os
 import json
-import pandas as pd
 import re
 import time
 import httplib2
 import redis
 import google_auth_httplib2
+from collections import Counter
 from werkzeug.middleware.proxy_fix import ProxyFix
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response, stream_with_context
 from flask_session import Session
@@ -23,10 +23,11 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_key_for_testing_only')
 # --- CONFIGURATION & CONSTANTS ---
 
 # API Rate Limiting & Pagination Constants
-BATCH_SIZE = 18              # Safe limit for batch requests
-BATCH_SLEEP_SECONDS = 0.2    # Rate limiting pause
-MAX_RETRIES = 5              # Connection retry attempts
-MAX_MESSAGES_PER_PAGE = 500  # Max Gmail IDs to fetch per list request
+BATCH_SIZE = 18              
+BATCH_SLEEP_SECONDS = 0.2    
+MAX_RETRIES = 5              
+MAX_MESSAGES_PER_PAGE = 500  
+MAX_INBOX_SCAN_LIMIT = 5000  # Hard limit to prevent timeout/memory crashes
 
 # OAuth Security Risk - Only enable insecure transport in dev
 if os.environ.get('ENVIRONMENT') != 'production':
@@ -73,7 +74,6 @@ def get_creds():
     if creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
-            # Update session with new token
             session['credentials'] = {
                 'token': creds.token,
                 'refresh_token': creds.refresh_token,
@@ -112,12 +112,10 @@ def login():
 
 @app.route('/callback')
 def callback():
-    # FIX 2: State Validation (CSRF Protection for OAuth)
     if not session.get('state') or request.args.get('state') != session['state']:
         return "Invalid state parameter (Possible CSRF attack)", 400
 
     redirect_uri = url_for('callback', _external=True)
-    # Pass state to flow to ensure validation matches
     flow = Flow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES, redirect_uri=redirect_uri, state=session['state'])
     flow.fetch_token(authorization_response=request.url)
     creds = flow.credentials
@@ -162,14 +160,13 @@ def get_labels():
 # --- CORE LOGIC STREAMS ---
 
 @app.route('/api/scan_stream')
-@csrf.exempt  # FIX 1: Exempt SSE endpoint
+@csrf.exempt 
 def scan_stream():
     if not get_creds(): 
         return Response("data: " + json.dumps({'error': 'Not logged in'}) + "\n\n", mimetype='text/event-stream')
 
     def generate():
         service = get_service()
-        # FIX 3: Null Safety Check
         if not service:
             yield f"data: {json.dumps({'error': 'Authentication expired. Please log in again.'})}\n\n"
             return
@@ -189,6 +186,12 @@ def scan_stream():
                     msgs = response.get('messages', [])
                     messages.extend(msgs)
                     yield f"data: {json.dumps({'status': 'counting', 'count': len(messages), 'log': f'Fetched page {page_num} ({len(msgs)} items). Total: {len(messages)}'})}\n\n"
+                    
+                    # FIX: Inbox Limit Check
+                    if len(messages) > MAX_INBOX_SCAN_LIMIT:
+                        yield f"data: {json.dumps({'error': f'Inbox too large ({len(messages)}+). Scan limit is {MAX_INBOX_SCAN_LIMIT}. Please archive emails.'})}\n\n"
+                        return
+
                     request = service.users().messages().list_next(request, response)
                     page_success = True
                     break 
@@ -210,7 +213,6 @@ def scan_stream():
 
         # Phase 2: Fetch Details
         senders = []
-        total_batches = (total_messages // BATCH_SIZE) + 1
         
         for i in range(0, total_messages, BATCH_SIZE):
             chunk = messages[i:i + BATCH_SIZE]
@@ -282,7 +284,7 @@ def scan_stream():
             
             else:
                 if current_batch_num % 5 == 0:
-                    yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed perfectly.'})}\n\n"
+                    yield f"data: {json.dumps({'log': f'Batch {current_batch_num} processed perfectly.'})}\n\n"
 
             processed_count = min(i + BATCH_SIZE, total_messages)
             progress_data = {
@@ -295,13 +297,11 @@ def scan_stream():
             
             time.sleep(BATCH_SLEEP_SECONDS)
 
-        # Phase 3: Aggregate
-        df = pd.DataFrame(senders, columns=['email'])
-        if not df.empty:
-            counts = df['email'].value_counts().reset_index()
-            counts.columns = ['email', 'count']
-            counts = counts.sort_values(by=['count', 'email'], ascending=[False, True])
-            result_data = counts.to_dict(orient='records')
+        # FIX: Removed Pandas, using Counter
+        if senders:
+            counts = Counter(senders)
+            # Sort by Count (Desc) then Email (Asc) for consistency
+            result_data = [{'email': email, 'count': count} for email, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
         else:
             result_data = []
             
@@ -314,12 +314,10 @@ def apply_actions():
     actions = request.json 
     def generate_updates():
         service = get_service()
-        # FIX 3: Null Safety Check
         if not service:
             yield json.dumps({"msg": "ERROR: Authentication failed. Please reload and login."}) + "\n"
             return
 
-        # FIX 7: Consistent Retry Logic using Constants
         def execute_with_retry(request_obj):
             for attempt in range(MAX_RETRIES):
                 try:

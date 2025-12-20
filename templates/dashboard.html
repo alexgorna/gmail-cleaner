@@ -2,168 +2,218 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Inbox Analyzer</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
     <style>
-        body { background-color: #f4f6f8; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
-        .main-container { background-color: white; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); padding: 20px; }
+        :root {
+            --primary-bg: #f0f4f8;
+            --hero-gradient-start: #e3f2fd;
+            --hero-gradient-end: #bbdefb;
+            --accent-color: #0d6efd;
+        }
+        body { background-color: var(--primary-bg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; color: #333; }
         
-        /* Header & User Profile */
-        .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
-        .app-title { font-weight: 700; font-size: 1.5rem; color: #333; }
-        .user-profile { display: flex; align-items: center; cursor: pointer; }
-        .user-avatar { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; margin-left: 10px; border: 2px solid #e9ecef; }
+        /* Navbar */
+        .navbar { background-color: white; box-shadow: 0 1px 2px rgba(0,0,0,0.05); z-index: 10; }
+        .user-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; border: 2px solid #fff; box-shadow: 0 0 0 1px #dee2e6; }
         
-        /* Controls Bar */
-        .controls-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
-        .search-box { position: relative; width: 300px; }
-        .search-box i { position: absolute; left: 10px; top: 10px; color: #aaa; }
-        .search-box input { padding-left: 35px; border-radius: 6px; border: 1px solid #ced4da; }
-        .action-buttons button { margin-left: 5px; font-size: 0.9rem; }
+        /* Hero Section */
+        .hero-section {
+            background: linear-gradient(135deg, var(--hero-gradient-start) 0%, var(--hero-gradient-end) 100%);
+            padding: 60px 20px 80px 20px; /* Extra bottom padding for overlap */
+            text-align: center;
+            border-bottom: 1px solid #dbeafe;
+        }
+        .hero-title { font-size: 2rem; font-weight: 300; color: #1e293b; margin-bottom: 0; }
+        .hero-count { font-weight: 700; color: var(--accent-color); }
         
-        /* Table Styles */
-        .table-responsive { border: 1px solid #e9ecef; border-radius: 8px; overflow: hidden; }
-        .table thead th { background-color: #f8f9fa; border-bottom: 1px solid #e9ecef; color: #6c757d; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; padding: 15px; }
-        .table tbody td { vertical-align: middle; padding: 15px; font-size: 0.9rem; color: #495057; }
-        .table tbody tr:hover { background-color: #f8f9fa; }
-        .email-cell { font-weight: 500; color: #212529; }
-        .count-badge { background-color: #e9ecef; color: #495057; padding: 4px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }
+        /* Main Card */
+        .dashboard-container {
+            margin-top: -50px; /* Overlap effect */
+            padding: 0 20px;
+            margin-bottom: 50px;
+        }
+        .content-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            border: none;
+            overflow: hidden;
+        }
+
+        /* Controls */
+        .controls-wrapper { padding: 20px; border-bottom: 1px solid #f1f5f9; background-color: #fff; }
+        .search-input-group { max-width: 500px; width: 100%; position: relative; }
+        .search-input-group i { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); color: #94a3b8; z-index: 5; }
+        .search-input-group input { padding-left: 40px; border-radius: 50px; background-color: #f8fafc; border: 1px solid #e2e8f0; height: 45px; }
+        .search-input-group input:focus { background-color: #fff; box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.15); border-color: var(--accent-color); }
         
-        /* Pagination */
-        .pagination-container { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; color: #6c757d; font-size: 0.9rem; }
-        .page-link { color: #6c757d; border: none; background: none; padding: 5px 10px; }
-        .page-link.active { background-color: #e9ecef; color: #0d6efd; border-radius: 4px; font-weight: 600; }
-        .rows-per-page select { border: 1px solid #ced4da; border-radius: 4px; padding: 2px 5px; color: #495057; }
+        /* Table */
+        .table-custom th { background-color: #f8fafc; color: #64748b; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; padding: 16px; border-bottom: 1px solid #e2e8f0; }
+        .table-custom td { vertical-align: middle; padding: 16px; border-bottom: 1px solid #f1f5f9; color: #334155; }
+        .table-custom tr:hover td { background-color: #f8fafc; }
+        .table-custom .email-text { font-weight: 500; color: #0f172a; }
+        .count-badge { 
+            background-color: #dbeafe; color: #1e40af; 
+            padding: 6px 12px; border-radius: 20px; 
+            font-size: 0.85rem; font-weight: 600; display: inline-block; min-width: 40px; text-align: center;
+        }
+
+        /* Action Select */
+        .action-select {
+            border-radius: 20px; border: 1px solid #cbd5e1; background-color: #fff; 
+            font-size: 0.9rem; padding: 6px 30px 6px 12px; cursor: pointer;
+            transition: all 0.2s;
+        }
+        .action-select:hover { border-color: #94a3b8; background-color: #f8fafc; }
+
+        /* Responsive Tweaks */
+        @media (max-width: 768px) {
+            .hero-title { font-size: 1.5rem; }
+            .controls-wrapper { flex-direction: column; gap: 15px; }
+            .search-input-group { max-width: 100%; }
+            .action-buttons { width: 100%; display: flex; justify-content: space-between; gap: 10px; overflow-x: auto; }
+            .action-buttons button { flex: 1; white-space: nowrap; }
+            .table-responsive { border: none; }
+        }
+
+        /* Progress Bar Custom */
+        .progress-custom { height: 10px; background-color: rgba(255,255,255,0.5); border-radius: 10px; overflow: hidden; max-width: 600px; margin: 20px auto 0; }
+        .progress-bar-custom { background-color: var(--accent-color); transition: width 0.3s ease; }
         
         /* Logs */
-        .console-window { background-color: #1e1e1e; color: #00ff00; font-family: monospace; font-size: 0.8rem; height: 150px; overflow-y: auto; border-radius: 5px; padding: 10px; margin-top: 20px; display: none; }
-        .log-info { color: #ccc; } .log-success { color: #28a745; } .log-warn { color: #ffc107; } .log-error { color: #dc3545; }
+        .console-window { background-color: #1e1e1e; color: #4ade80; font-family: 'SF Mono', Consolas, monospace; font-size: 0.8rem; height: 150px; overflow-y: auto; border-radius: 8px; padding: 15px; margin-top: 20px; display: none; border: 1px solid #333; }
+        .log-error { color: #ef4444; } .log-info { color: #94a3b8; }
     </style>
 </head>
 <body>
 
-<nav class="navbar navbar-expand-lg navbar-light bg-white border-bottom py-3">
-    <div class="container-fluid px-5">
-        <a class="navbar-brand fw-bold" href="#">Inbox Analyzer</a>
+<nav class="navbar navbar-expand-lg">
+    <div class="container-fluid px-4">
+        <a class="navbar-brand fw-bold text-primary" href="#"><i class="bi bi-envelope-paper-fill me-2"></i>Inbox Analyzer</a>
         <div class="d-flex align-items-center">
             <div class="dropdown">
-                <div class="user-profile dropdown-toggle" data-bs-toggle="dropdown">
-                    <span id="user-name" class="fw-medium me-2">Loading...</span>
-                    <img id="user-avatar" src="https://via.placeholder.com/36" class="user-avatar" alt="User">
+                <div class="d-flex align-items-center cursor-pointer dropdown-toggle" data-bs-toggle="dropdown" style="cursor: pointer;">
+                    <img id="user-avatar" src="https://via.placeholder.com/32" class="user-avatar me-2" alt="User">
+                    <span id="user-name" class="fw-medium small d-none d-sm-block text-secondary">Loading...</span>
                 </div>
-                <ul class="dropdown-menu dropdown-menu-end shadow">
-                    <li class="px-3 py-2 text-muted" style="font-size:0.8rem" id="user-email">email@example.com</li>
+                <ul class="dropdown-menu dropdown-menu-end shadow border-0 mt-2">
+                    <li class="px-3 py-2 text-muted small" id="user-email">email@example.com</li>
                     <li><hr class="dropdown-divider"></li>
-                    <li><a class="dropdown-item text-danger" href="/logout">Logout</a></li>
+                    <li><a class="dropdown-item text-danger small" href="/logout"><i class="bi bi-box-arrow-right me-2"></i>Logout</a></li>
                 </ul>
             </div>
         </div>
     </div>
 </nav>
 
-<div class="container mt-5 mb-5">
-    
-    <div id="progress-container" class="mb-4">
-        <div class="d-flex justify-content-between mb-1">
-            <span id="progress-text" class="text-muted small">Initializing...</span>
-            <span id="progress-percent" class="fw-bold small">0%</span>
-        </div>
-        <div class="progress" style="height: 8px;">
-            <div id="progress-bar-inner" class="progress-bar" style="width: 0%"></div>
-        </div>
-    </div>
-
-    <div class="main-container">
-        
-        <div class="controls-bar">
-            <div class="d-flex align-items-center gap-3">
-                <div class="search-box">
-                    <i class="bi bi-search"></i>
-                    <input type="text" class="form-control" id="searchInput" placeholder="Search emails..." onkeyup="handleSearch()">
+<div class="hero-section">
+    <div class="container-fluid" style="max-width: 1400px;">
+        <div id="hero-status-content">
+            <h1 class="hero-title" id="status-text">Scanning your inbox...</h1>
+            <div id="scan-progress-wrapper">
+                <div class="progress progress-custom mt-3">
+                    <div id="progress-bar-inner" class="progress-bar progress-bar-custom" style="width: 0%"></div>
                 </div>
-                <div id="selection-count" class="text-primary fw-bold small" style="display:none;">0 Selected</div>
+                <div class="text-muted small mt-2" id="progress-detail">Initializing connection...</div>
             </div>
-            
-            <div class="action-buttons">
-                <button class="btn btn-light border text-secondary" onclick="window.location.reload()">
-                    <i class="bi bi-arrow-clockwise"></i> Reload
-                </button>
-                <button class="btn btn-light border text-secondary" onclick="downloadCSV()">
-                    <i class="bi bi-download"></i> CSV
-                </button>
-                <button id="apply-btn" class="btn btn-primary px-4" onclick="applyChanges()">
-                    APPLY CHANGES
-                </button>
-            </div>
-        </div>
-
-        <div class="table-responsive">
-            <table class="table table-borderless mb-0">
-                <thead>
-                    <tr>
-                        <th style="width: 40px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
-                        <th>Sender Email</th>
-                        <th style="width: 100px;">Count</th>
-                        <th style="width: 300px;">Action</th>
-                    </tr>
-                </thead>
-                <tbody id="email-table-body">
-                    </tbody>
-            </table>
-        </div>
-
-        <div class="pagination-container" id="pagination-controls" style="display:none;">
-            <div class="rows-per-page">
-                Show 
-                <select id="rowsPerPage" onchange="changeRowsPerPage()">
-                    <option value="10">10</option>
-                    <option value="25">25</option>
-                    <option value="50" selected>50</option>
-                </select>
-                rows
-            </div>
-            
-            <div>
-                <span id="page-info" class="me-3">1-50 of 100</span>
-                <button class="btn btn-sm btn-outline-secondary border-0" onclick="changePage(-1)"><i class="bi bi-chevron-left"></i></button>
-                <input type="number" id="jumpToPage" class="form-control d-inline-block text-center mx-1" style="width: 50px; height: 30px; font-size: 0.85rem;" value="1" onchange="jumpToPage()">
-                <button class="btn btn-sm btn-outline-secondary border-0" onclick="changePage(1)"><i class="bi bi-chevron-right"></i></button>
-            </div>
-        </div>
-
-    </div>
-
-    <div class="mt-3">
-        <button class="btn btn-link text-decoration-none btn-sm text-muted" onclick="toggleLogs()">
-            <i class="bi bi-terminal"></i> Show System Logs
-        </button>
-        <div id="scan-debugger" class="console-window">
-            <div class="log-info">System ready. Waiting for scan...</div>
         </div>
     </div>
 </div>
 
+<div class="dashboard-container">
+    <div class="container-fluid px-0" style="max-width: 1400px; margin: 0 auto;">
+        
+        <div class="content-card">
+            <div class="controls-wrapper d-flex justify-content-between align-items-center">
+                <div class="search-input-group">
+                    <i class="bi bi-search"></i>
+                    <input type="text" id="searchInput" placeholder="Search senders..." onkeyup="handleSearch()">
+                </div>
+                
+                <div class="action-buttons d-flex align-items-center ms-md-3">
+                    <span id="selection-count" class="text-primary fw-bold small me-3" style="display:none;">0 Selected</span>
+                    <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small me-2" onclick="window.location.reload()">
+                        <i class="bi bi-arrow-clockwise"></i>
+                    </button>
+                    <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small me-2" onclick="downloadCSV()">
+                        <i class="bi bi-download"></i> CSV
+                    </button>
+                    <button id="apply-btn" class="btn btn-primary rounded-pill px-4 py-2 small fw-bold" onclick="applyChanges()">
+                        Apply Actions
+                    </button>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table table-custom mb-0 w-100">
+                    <thead>
+                        <tr>
+                            <th style="width: 40px; padding-left: 24px;"><input class="form-check-input" type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
+                            <th>Sender Email</th>
+                            <th style="width: 120px;" class="text-center">Count</th>
+                            <th style="width: 280px;" class="text-end pe-4">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="email-table-body">
+                        <tr><td colspan="4" class="text-center py-5 text-muted">Waiting for scan data...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="d-flex justify-content-between align-items-center p-3 border-top bg-light" id="pagination-controls" style="display:none !important;">
+                <div class="d-flex align-items-center text-muted small">
+                    <span class="d-none d-sm-inline me-2">Rows:</span>
+                    <select id="rowsPerPage" class="form-select form-select-sm" style="width: 70px;" onchange="changeRowsPerPage()">
+                        <option value="10">10</option>
+                        <option value="25">25</option>
+                        <option value="50" selected>50</option>
+                    </select>
+                </div>
+                
+                <div class="d-flex align-items-center">
+                    <button class="btn btn-sm btn-outline-secondary border-0 me-1" onclick="changePage(-1)"><i class="bi bi-chevron-left"></i></button>
+                    <span class="mx-2 small text-muted" id="page-info">1-50 of 100</span>
+                    <button class="btn btn-sm btn-outline-secondary border-0 ms-1" onclick="changePage(1)"><i class="bi bi-chevron-right"></i></button>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-4 text-center">
+            <button class="btn btn-link text-decoration-none btn-sm text-secondary opacity-75" onclick="toggleLogs()">
+                <i class="bi bi-terminal me-1"></i> Show System Logs
+            </button>
+            <div id="scan-debugger" class="console-window text-start mx-auto" style="max-width: 800px;">
+                <div class="log-info">System ready.</div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
 <div class="modal fade" id="labelModal" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">New Label</h5>
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content border-0 shadow-lg">
+            <div class="modal-header border-bottom-0 pb-0">
+                <h5 class="modal-title fw-bold">Create New Label</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-body">
+            <div class="modal-body pt-4">
                 <div class="mb-3">
-                    <label class="form-label">Name:</label>
-                    <input type="text" class="form-control" id="newLabelName">
+                    <label class="form-label small text-muted text-uppercase fw-bold">Label Name</label>
+                    <input type="text" class="form-control form-control-lg bg-light border-0" id="newLabelName" placeholder="e.g. Newsletters">
                 </div>
                 <div class="form-check mb-2">
                     <input class="form-check-input" type="checkbox" id="nestLabelCheck" onchange="toggleNestDropdown()">
-                    <label class="form-check-label">Nest label under:</label>
+                    <label class="form-check-label small">Nest under parent label</label>
                 </div>
                 <select class="form-select" id="parentLabelSelect" disabled></select>
             </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-primary" onclick="confirmLabelCreation()">Create</button>
+            <div class="modal-footer border-top-0 pt-0 pb-4">
+                <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary px-4" onclick="confirmLabelCreation()">Create Label</button>
             </div>
         </div>
     </div>
@@ -183,10 +233,13 @@
     // --- INIT ---
     window.onload = async function() {
         fetchUserInfo();
-        const labelRes = await fetch('/api/get_labels');
-        existingLabels = await labelRes.json();
-        labelOptionsHTML = existingLabels.filter(l => l.type === 'user').map(l => `<option value="label:${l.id}">${l.name}</option>`).join('');
-        populateParentLabelSelect();
+        try {
+            const labelRes = await fetch('/api/get_labels');
+            existingLabels = await labelRes.json();
+            labelOptionsHTML = existingLabels.filter(l => l.type === 'user').map(l => `<option value="label:${l.id}">${l.name}</option>`).join('');
+            populateParentLabelSelect();
+        } catch(e) { console.log("Label fetch error", e); }
+        
         startScanStream();
     };
 
@@ -210,20 +263,21 @@
         const pageData = filteredData.slice(start, end);
 
         if (pageData.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-muted">No emails found</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center py-5 text-muted">No emails found matching your search.</td></tr>';
+            document.getElementById('pagination-controls').style.setProperty('display', 'none', 'important');
             return;
         }
 
         pageData.forEach(row => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td><input type="checkbox" class="row-checkbox" onchange="updateSelection()"></td>
-                <td class="email-cell">${row.email}</td>
-                <td><span class="count-badge">${row.count}</span></td>
-                <td>
-                    <select class="form-select form-select-sm action-select" style="width: 200px;" data-email="${row.email}" onchange="handleActionChange(this)">
+                <td style="padding-left: 24px;"><input type="checkbox" class="form-check-input row-checkbox" onchange="updateSelection()"></td>
+                <td class="email-text">${row.email}</td>
+                <td class="text-center"><span class="count-badge">${row.count}</span></td>
+                <td class="text-end pe-4">
+                    <select class="form-select form-select-sm action-select d-inline-block" style="width: auto; max-width: 200px;" data-email="${row.email}" onchange="handleActionChange(this)">
                         <option value="none" selected>Choose action...</option>
-                        <option value="delete">Delete</option>
+                        <option value="delete" class="text-danger">Delete</option>
                         <optgroup label="Send to Folder">
                             <option value="new_label">+ Create New Label</option>
                             ${labelOptionsHTML}
@@ -235,8 +289,8 @@
         });
 
         document.getElementById('page-info').innerText = `${start + 1}-${Math.min(end, filteredData.length)} of ${filteredData.length}`;
-        document.getElementById('pagination-controls').style.display = 'flex';
-        document.getElementById('jumpToPage').value = currentPage;
+        document.getElementById('pagination-controls').style.setProperty('display', 'flex', 'important');
+        document.getElementById('jumpToPage').value = currentPage; // Wait, removed jump input in new UI for cleaner look, sticking to arrows
     }
 
     function changeRowsPerPage() {
@@ -251,17 +305,6 @@
         if (newPage >= 1 && newPage <= maxPage) {
             currentPage = newPage;
             renderTable();
-        }
-    }
-
-    function jumpToPage() {
-        const val = parseInt(document.getElementById('jumpToPage').value);
-        const maxPage = Math.ceil(filteredData.length / rowsPerPage);
-        if (val >= 1 && val <= maxPage) {
-            currentPage = val;
-            renderTable();
-        } else {
-            document.getElementById('jumpToPage').value = currentPage;
         }
     }
 
@@ -294,12 +337,12 @@
         filteredData.forEach(row => {
             csvContent += `${row.email},${row.count}\n`;
         });
-        const encodedUri = encodeURI(csvContent);
         const link = document.createElement("a");
-        link.setAttribute("href", encodedUri);
+        link.setAttribute("href", encodeURI(csvContent));
         link.setAttribute("download", "inbox_analysis.csv");
         document.body.appendChild(link);
         link.click();
+        document.body.removeChild(link);
     }
 
     function toggleLogs() {
@@ -320,31 +363,37 @@
     function startScanStream() {
         const evtSource = new EventSource("/api/scan_stream");
         const progressBar = document.getElementById('progress-bar-inner');
-        const progressText = document.getElementById('progress-text');
+        const progressDetail = document.getElementById('progress-detail');
+        const statusText = document.getElementById('status-text');
         
         evtSource.onmessage = function(event) {
             const data = JSON.parse(event.data);
             if (data.log) logToScanDebugger(data.log, data.level || 'info');
             if (data.error) { logToScanDebugger("ERROR: " + data.error, "error"); evtSource.close(); }
             
-            if (data.status === 'init') progressText.innerText = data.message;
-            else if (data.status === 'progress') {
+            if (data.status === 'init') {
+                statusText.innerText = "Connecting to Gmail...";
+                progressDetail.innerText = data.message;
+            } else if (data.status === 'progress') {
                 progressBar.style.width = data.percent + "%";
-                progressText.innerText = `Scanning ${data.processed} of ${data.total}...`;
-                document.getElementById('progress-percent').innerText = data.percent + "%";
+                statusText.innerText = `Scanning Inbox (${data.percent}%)`;
+                progressDetail.innerText = `Processed ${data.processed} of ${data.total} emails...`;
             } else if (data.status === 'complete') {
-                // --- UPDATE STARTS HERE ---
+                // --- UI UPDATE: REPLACE PROGRESS WITH TOTAL COUNT ---
                 allData = data.data;
                 const totalEmails = allData.reduce((sum, item) => sum + item.count, 0);
-
-                // Replaces the progress bar with the success message
-                const container = document.getElementById('progress-container');
-                container.innerHTML = `<div class="alert alert-success text-center mb-0 fw-bold">You have ${totalEmails} emails in your inbox.</div>`;
-
+                
+                // Replace the entire Status/Progress div with the Result Text
+                const heroContent = document.getElementById('hero-status-content');
+                heroContent.innerHTML = `
+                    <h1 class="hero-title" style="margin-top: 10px;">
+                        You have <span class="hero-count">${totalEmails} emails</span> in your inbox.
+                    </h1>
+                `;
+                
                 filteredData = allData;
                 renderTable();
                 evtSource.close();
-                // --- UPDATE ENDS HERE ---
             }
         };
         evtSource.onerror = function() { evtSource.close(); };
@@ -401,8 +450,9 @@
         });
         if(actions.length === 0) return alert("No actions selected");
 
-        document.getElementById('apply-btn').disabled = true;
-        document.getElementById('apply-btn').innerText = "Processing...";
+        const btn = document.getElementById('apply-btn');
+        btn.disabled = true;
+        btn.innerText = "Processing...";
         toggleLogs(); 
         logToScanDebugger("Starting Apply Changes...", "info");
 
@@ -431,7 +481,8 @@
             }
         } catch (err) {
             logToScanDebugger(`Connection Error: ${err.message}`, "error");
-            document.getElementById('apply-btn').disabled = false;
+            btn.disabled = false;
+            btn.innerText = "Apply Actions";
         }
     }
 </script>

@@ -1,16 +1,79 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Login - Gmail Cleaner</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Inbox Analyzer</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary-bg: #f0f4f8;
+            --accent-color: #0d6efd;
+        }
+        body { 
+            background-color: var(--primary-bg); 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; 
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-card {
+            background: white;
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+            border: 1px solid rgba(255,255,255,0.5);
+        }
+        .app-brand {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--accent-color);
+            margin-bottom: 10px;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .login-btn {
+            background-color: var(--accent-color);
+            border: none;
+            padding: 12px;
+            font-weight: 600;
+            width: 100%;
+            border-radius: 8px;
+            transition: transform 0.1s ease;
+        }
+        .login-btn:hover {
+            background-color: #0b5ed7;
+            transform: translateY(-1px);
+        }
+        .hero-text { color: #1e293b; font-weight: 600; margin-bottom: 8px; }
+        .sub-text { color: #64748b; font-size: 0.95rem; margin-bottom: 30px; }
+    </style>
 </head>
-<body class="d-flex align-items-center justify-content-center vh-100 bg-light">
-    <div class="text-center">
-        <h1 class="mb-4">Gmail Cleaner</h1>
-        <p class="text-muted mb-4">Organize your inbox by bulk-sorting emails.</p>
-        <a href="/login" class="btn btn-primary btn-lg">
-            Login with Google
-        </a>
+<body>
+
+    <div class="container px-3">
+        <div class="login-card mx-auto">
+            <div class="app-brand">
+                <i class="bi bi-envelope-paper-fill"></i> Inbox Analyzer
+            </div>
+            <h2 class="hero-text mt-2">Welcome Back</h2>
+            <p class="sub-text">Organize, clean, and take control of your inbox in seconds.</p>
+            
+            <a href="/login" class="btn btn-primary login-btn shadow-sm">
+                <i class="bi bi-google me-2"></i> Login with Google
+            </a>
+            
+            <div class="mt-4 small text-muted">
+                <i class="bi bi-shield-lock"></i> Secure & Private Connection
+            </div>
+        </div>
     </div>
+
 </body>
 </html>

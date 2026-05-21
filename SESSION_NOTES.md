@@ -99,7 +99,7 @@ Stack: Python/Flask, Gmail API, Bootstrap 5, Vanilla JS, Redis sessions, deploye
 ---
 
 ### 8. Bug Fix — Label Suggestions Overlay Hides Nest Checkbox
-**Commit:** pending push
+**Commit:** deployed ✓
 
 **Problem:** The live suggestions list in the Create Label modal was `position: absolute`, causing it to float over (and hide) the "Nest under parent label" checkbox below the input.
 
@@ -110,7 +110,7 @@ Stack: Python/Flask, Gmail API, Bootstrap 5, Vanilla JS, Redis sessions, deploye
 ---
 
 ### 9. Feature — Gmail Search Link Icon Next to Each Sender
-**Commit:** pending push
+**Commit:** deployed ✓
 
 **What it does:** Each email address row now has a small external-link icon to its right. Clicking it opens a new tab directly to `https://mail.google.com/mail/u/0/#search/{email}` — the Gmail search results for that sender — without leaving the app.
 
@@ -125,6 +125,61 @@ Stack: Python/Flask, Gmail API, Bootstrap 5, Vanilla JS, Redis sessions, deploye
 
 ---
 
+### 10. Bug Fix — Critical Login Broken (InvalidGrantError / PKCE Mismatch)
+**Commit:** *"Fix: Restore PKCE code_verifier in callback to fix InvalidGrantError"* — deployed ✓
+
+**Problem:** All users hit a 500 Internal Server Error on login. After the initial fix (forcing `https://` for Railway's SSL termination), the error changed to a user-visible "Login failed (InvalidGrantError). Please try again." message.
+
+**Root cause:** A newer version of `google-auth-oauthlib` automatically enables PKCE (Proof Key for Code Exchange). During `/login`, the library generates a `code_verifier` and sends the corresponding `code_challenge` to Google as part of the authorization URL. In `/callback`, a brand-new `Flow` object is created — which has no knowledge of the original verifier. When `fetch_token()` was called without restoring the verifier, Google rejected the token exchange because the PKCE proof didn't match.
+
+**Two-part fix:**
+1. In `/login`: `session['code_verifier'] = flow.code_verifier` — persist the verifier before redirecting to Google
+2. In `/callback`: `flow.code_verifier = session.get('code_verifier')` — restore it onto the new flow object before calling `flow.fetch_token()`
+
+**Why this wasn't an issue before:** `requirements.txt` has no version pins. A `google-auth-oauthlib` upgrade silently introduced PKCE, which is the correct security behavior — but the callback never accounted for it.
+
+**Files changed:** `app.py`
+
+**Side note:** The https-forcing fix (item 1 from the login investigation) was also necessary and remains in place. Railway terminates SSL at its load balancer, so `request.url` arrives as `http://` inside the container; oauthlib rejects non-https URLs in production mode. The fix: `if auth_response.startswith('http://'): auth_response = 'https://' + auth_response[7:]`
+
+---
+
+### 11. Feature — Live Inbox Count Deduction + Organized Emails Summary in Hero
+**Commit:** deployed ✓
+
+**What it does:**
+- After the scan completes, the hero now shows two lines:
+  1. *"You have **X emails** in your inbox."* — the X is blue (existing `.hero-count` style)
+  2. *"You successfully organized **X emails**."* — the X is Spotify green (`#1DB954`), hidden until at least one action has been applied
+- When Apply Actions is clicked, the second line immediately shows **"Processing..."** with three sequentially blinking animated dots (CSS `@keyframes blink-dot` with staggered `animation-delay`)
+- While actions are processing, the top inbox count decreases live with each `row_complete` event — the "Processing..." line stays visible
+- When the backend signals completion, the "Processing..." text is replaced with the final **"You successfully organized X emails."** in Spotify green
+- Session totals reset on each fresh inbox scan
+
+**Implementation details:**
+- `currentInboxCount` and `sessionOrganizedCount` JS variables track state across the session
+- `row_complete` events update `currentInboxCount` but do NOT touch the organized summary during processing
+- The `complete` event is the single place that writes the final organized count
+- CSS animation: `.processing-dot` spans use `blink-dot` keyframes (0% opacity → 40% full → 80% back to 0), with `nth-child(2)` at +0.2s and `nth-child(3)` at +0.4s for the wave effect
+
+**Files changed:** `templates/dashboard.html`
+
+---
+
+### 12. Feature — "Processing..." Blinking State During Apply Actions
+**Commit:** pending deployment
+
+**What it does:**
+- As soon as Apply Actions is clicked, the "You successfully organized X emails" line (whether previously visible or not) switches to "Processing..." with three blinking animated dots
+- The top inbox count (`You have X emails in your inbox`) continues deducting live as each sender's emails are moved
+- When all actions finish, the blinking text is replaced with the final "You successfully organized X emails" in Spotify green
+- This gives clear visual feedback that work is happening, without prematurely showing a count mid-process
+
+**Files changed:** `templates/dashboard.html`
+
+---
+
 ## Pending / Next Steps
+- Consider pinning versions in `requirements.txt` to prevent future silent regressions from library upgrades
 - Continue working through the feature backlog
 - Long-term: move scan Phase 2 to a background job to remove the SSE timeout constraint

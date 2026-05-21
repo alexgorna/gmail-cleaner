@@ -93,6 +93,7 @@ def login():
     flow = Flow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES, redirect_uri=redirect_uri)
     auth_url, state = flow.authorization_url(access_type='offline', prompt='consent')
     session['state'] = state
+    session['code_verifier'] = flow.code_verifier  # Persist PKCE verifier for callback
     return redirect(auth_url)
 
 @app.route('/callback')
@@ -110,6 +111,7 @@ def callback():
 
     try:
         flow = Flow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES, redirect_uri=redirect_uri, state=session['state'])
+        flow.code_verifier = session.get('code_verifier')  # Restore PKCE verifier for token exchange
         flow.fetch_token(authorization_response=auth_response)
     except Exception as e:
         print(f"OAuth callback error: {type(e).__name__}: {e}")

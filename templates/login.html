@@ -65,6 +65,14 @@
             <h2 class="hero-text mt-2">Welcome Back</h2>
             <p class="sub-text">Organize, clean, and take control of your inbox in seconds.</p>
             
+            {% with error = session.pop('login_error', None) %}
+            {% if error %}
+            <div class="alert alert-danger small py-2 mb-3 text-start">
+                <i class="bi bi-exclamation-circle me-1"></i> {{ error }}
+            </div>
+            {% endif %}
+            {% endwith %}
+
             <a href="/login" class="btn btn-primary login-btn shadow-sm">
                 <i class="bi bi-google me-2"></i> Login with Google
             </a>

@@ -99,9 +99,23 @@ def login():
 def callback():
     if not session.get('state') or request.args.get('state') != session['state']:
         return "Invalid state parameter", 400
+
+    # Railway terminates SSL at its proxy, so request.url may arrive as http://.
+    # oauthlib rejects non-https URLs in production, so force the scheme here.
+    auth_response = request.url
+    if auth_response.startswith('http://'):
+        auth_response = 'https://' + auth_response[7:]
+
     redirect_uri = url_for('callback', _external=True)
-    flow = Flow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES, redirect_uri=redirect_uri, state=session['state'])
-    flow.fetch_token(authorization_response=request.url)
+
+    try:
+        flow = Flow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES, redirect_uri=redirect_uri, state=session['state'])
+        flow.fetch_token(authorization_response=auth_response)
+    except Exception as e:
+        print(f"OAuth callback error: {type(e).__name__}: {e}")
+        session['login_error'] = f"Login failed ({type(e).__name__}). Please try again."
+        return redirect(url_for('index'))
+
     creds = flow.credentials
     session['credentials'] = {
         'token': creds.token, 'refresh_token': creds.refresh_token,

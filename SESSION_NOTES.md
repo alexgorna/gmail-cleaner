@@ -109,7 +109,22 @@ Stack: Python/Flask, Gmail API, Bootstrap 5, Vanilla JS, Redis sessions, deploye
 
 ---
 
+### 9. Feature — Gmail Search Link Icon Next to Each Sender
+**Commit:** pending push
+
+**What it does:** Each email address row now has a small external-link icon to its right. Clicking it opens a new tab directly to `https://mail.google.com/mail/u/0/#search/{email}` — the Gmail search results for that sender — without leaving the app.
+
+**Implementation details:**
+- Icon is the user-supplied SVG (external-link-outline), inlined directly in the JS with `fill="currentColor"` so it inherits CSS color
+- Built via DOM API (`createElement`, `createTextNode`) rather than innerHTML to keep XSS safety on the email address
+- URL uses `encodeURIComponent` on the email address
+- Icon is muted gray at rest (opacity 0.5), turns blue on hover — subtle but discoverable
+- Opens with `target="_blank"` and `rel="noopener noreferrer"`
+
+**Files changed:** `templates/dashboard.html`
+
+---
+
 ## Pending / Next Steps
-- Push and test the nest checkbox overlay fix (item 8)
 - Continue working through the feature backlog
 - Long-term: move scan Phase 2 to a background job to remove the SSE timeout constraint

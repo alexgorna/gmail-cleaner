@@ -548,6 +548,18 @@
             document.querySelectorAll('.action-select optgroup').forEach(grp => {
                 grp.innerHTML = `<option value="new_label">+ Create New Label</option>` + labelOptionsHTML;
             });
+
+            // Replacing optgroup innerHTML wipes the browser's selected state for every dropdown.
+            // Restore each row's visual selection from the pendingActions map.
+            document.querySelectorAll('.action-select').forEach(select => {
+                const email = select.dataset.email;
+                if (pendingActions[email]) {
+                    const pending = pendingActions[email];
+                    if (pending.action === 'delete') select.value = 'delete';
+                    else if (pending.action === 'label') select.value = `label:${pending.labelId}`;
+                }
+            });
+
             populateBulkDropdown();
             
             const labelVal = `label:${newLabel.id}`;

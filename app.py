@@ -25,7 +25,7 @@ BATCH_SIZE = 18
 BATCH_SLEEP_SECONDS = 0.2    
 MAX_RETRIES = 5              
 MAX_MESSAGES_PER_PAGE = 500  
-MAX_INBOX_SCAN_LIMIT = 5000  
+MAX_INBOX_SCAN_LIMIT = 10000
 
 if os.environ.get('ENVIRONMENT') != 'production':
     os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
@@ -195,7 +195,7 @@ def scan_stream():
                     yield f"data: {json.dumps({'status': 'counting', 'count': len(messages), 'log': f'Fetched page {page_num} ({len(msgs)} items). Total: {len(messages)}'})}\n\n"
                     
                     if len(messages) > MAX_INBOX_SCAN_LIMIT:
-                        yield f"data: {json.dumps({'error': f'Inbox too large ({len(messages)}+). Limit is {MAX_INBOX_SCAN_LIMIT}. Please archive emails.'})}\n\n"
+                        yield f"data: {json.dumps({'error': f'Inbox too large ({len(messages)}+). Limit is {MAX_INBOX_SCAN_LIMIT}.', 'type': 'cap_exceeded', 'count': len(messages), 'limit': MAX_INBOX_SCAN_LIMIT})}\n\n"
                         return
 
                     request = service.users().messages().list_next(request, response)

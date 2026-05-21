@@ -179,7 +179,42 @@ Stack: Python/Flask, Gmail API, Bootstrap 5, Vanilla JS, Redis sessions, deploye
 
 ---
 
+### 13. Architecture — Background Job Refactor (Celery + Redis)
+**Commit:** pending deployment
+
+**Motivation:** The SSE-based scan held an HTTP connection open for the full duration of Phase 2 (up to 3–4 minutes for large inboxes). This caused Railway proxy timeouts, required a 600s Gunicorn timeout, and made concurrent users impossible since each scan occupied a long-running thread. With commercialization in mind, this was the highest-leverage architectural change to make first.
+
+**New architecture:**
+- `POST /api/start_scan` — instantly queues the scan job and returns a `job_id` (milliseconds)
+- Celery worker picks up the job and runs Phase 1 + Phase 2 independently of any HTTP connection
+- Worker writes progress snapshots and log lines to Redis under `scan:{job_id}:progress` and `scan:{job_id}:logs` (2-hour TTL)
+- `GET /api/scan_status/<job_id>` — returns current progress + any new log lines since `log_offset`
+- `GET /api/scan_results/<job_id>` — returns final sender data once status is `complete`
+- Frontend polls `/api/scan_status` every 1.5 seconds (each call completes in <100ms)
+
+**New files:**
+- `celery_app.py` — Celery app config (Redis broker/backend, 30-min soft limit, 35-min hard kill)
+- `tasks.py` — `run_inbox_scan` Celery task with full Phase 1 + Phase 2 scan logic
+
+**Files changed:** `app.py`, `templates/dashboard.html`, `requirements.txt`, `Procfile`
+
+**What was removed:** `/api/scan_stream` SSE endpoint and the `EventSource` client in JS
+
+**What was added to Procfile:**
+```
+worker: celery -A tasks worker --loglevel=info --concurrency=2
+```
+Railway runs both `web` and `worker` processes from the same deploy. On other platforms (Fly.io, VPS), the worker runs as a separate process/service.
+
+**Security:** Job IDs are UUIDs stored in the user's session. `scan_status` and `scan_results` verify the `job_id` matches `session['scan_job_id']` — users cannot access each other's jobs.
+
+**Cap exceeded handling:** The worker sets `status: failed, error: cap_exceeded` in Redis; the poll handler renders the same user-facing warning as before.
+
+**Backup of pre-refactor stable state:** `backup_stable_2026_05_21/` in project root.
+
+---
+
 ## Pending / Next Steps
 - Consider pinning versions in `requirements.txt` to prevent future silent regressions from library upgrades
+- Google OAuth app verification (required before commercializing — sensitive scopes need Google review)
 - Continue working through the feature backlog
-- Long-term: move scan Phase 2 to a background job to remove the SSE timeout constraint

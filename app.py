@@ -1,11 +1,10 @@
 import os
 import json
-import re
 import time
+import uuid
 import httplib2
-import redis
+import redis as redis_lib
 import google_auth_httplib2
-from collections import Counter
 from werkzeug.middleware.proxy_fix import ProxyFix
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response, stream_with_context
 from flask_session import Session
@@ -16,16 +15,17 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from tasks import run_inbox_scan
+
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_key_for_testing_only')
 
 # --- CONFIGURATION & CONSTANTS ---
-BATCH_SIZE = 18              
-BATCH_SLEEP_SECONDS = 0.2    
-MAX_RETRIES = 5              
-MAX_MESSAGES_PER_PAGE = 500  
-MAX_INBOX_SCAN_LIMIT = 10000
+BATCH_SIZE = 18
+BATCH_SLEEP_SECONDS = 0.2
+MAX_RETRIES = 5
+MAX_MESSAGES_PER_PAGE = 500
 
 if os.environ.get('ENVIRONMENT') != 'production':
     os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
@@ -36,7 +36,7 @@ app.config['SESSION_USE_SIGNER'] = True
 
 if os.environ.get('REDIS_URL'):
     app.config['SESSION_TYPE'] = 'redis'
-    app.config['SESSION_REDIS'] = redis.from_url(os.environ.get('REDIS_URL'))
+    app.config['SESSION_REDIS'] = redis_lib.from_url(os.environ.get('REDIS_URL'))
 else:
     app.config['SESSION_TYPE'] = 'filesystem'
 
@@ -57,7 +57,11 @@ if os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'):
     with open('client_secret.json', 'w') as f:
         f.write(os.environ.get('GOOGLE_CLIENT_SECRETS_JSON'))
 
+
 # --- HELPER FUNCTIONS ---
+def get_redis_client():
+    return redis_lib.from_url(os.environ.get('REDIS_URL', 'redis://localhost:6379/0'))
+
 def get_creds():
     if 'credentials' not in session: return None
     creds = Credentials(**session['credentials'])
@@ -81,10 +85,11 @@ def get_service():
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
     return build('gmail', 'v1', http=authorized_http)
 
+
 # --- ROUTES ---
 @app.route('/')
 def index():
-    if not get_creds(): return render_template('login.html') 
+    if not get_creds(): return render_template('login.html')
     return render_template('dashboard.html')
 
 @app.route('/login')
@@ -101,8 +106,7 @@ def callback():
     if not session.get('state') or request.args.get('state') != session['state']:
         return "Invalid state parameter", 400
 
-    # Railway terminates SSL at its proxy, so request.url may arrive as http://.
-    # oauthlib rejects non-https URLs in production, so force the scheme here.
+    # Railway terminates SSL at its proxy; force https so oauthlib accepts the URL.
     auth_response = request.url
     if auth_response.startswith('http://'):
         auth_response = 'https://' + auth_response[7:]
@@ -157,22 +161,22 @@ def get_labels():
 def create_label():
     service = get_service()
     if not service: return jsonify({'error': 'Auth failed'}), 401
-    
+
     data = request.json
     name = data.get('name')
     parent_id = data.get('parentId')
-    
+
     if parent_id and data.get('parentName'):
         full_name = f"{data['parentName']}/{name}"
     else:
         full_name = name
-        
+
     try:
         label_object = {'name': full_name, 'labelListVisibility': 'labelShow', 'messageListVisibility': 'show'}
         created = service.users().labels().create(userId='me', body=label_object).execute()
         return jsonify(created)
     except HttpError as error:
-        if error.resp.status == 409: # Already exists
+        if error.resp.status == 409:  # Already exists
             try:
                 results = service.users().labels().list(userId='me').execute()
                 for l in results.get('labels', []):
@@ -183,97 +187,49 @@ def create_label():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/scan_stream')
-@csrf.exempt 
-def scan_stream():
-    if not get_creds(): 
-        return Response("data: " + json.dumps({'error': 'Not logged in'}) + "\n\n", mimetype='text/event-stream')
 
-    def generate():
-        service = get_service()
-        if not service:
-            yield f"data: {json.dumps({'error': 'Authentication expired.'})}\n\n"
-            return
+# --- SCAN ENDPOINTS (background job) ---
+@app.route('/api/start_scan', methods=['POST'])
+def start_scan():
+    if not get_creds():
+        return jsonify({'error': 'Not logged in'}), 401
+    job_id = str(uuid.uuid4())
+    session['scan_job_id'] = job_id
+    credentials_dict = session.get('credentials')
+    run_inbox_scan.delay(job_id, credentials_dict)
+    return jsonify({'job_id': job_id})
 
-        messages = []
-        yield f"data: {json.dumps({'status': 'init', 'message': 'Connecting to Gmail...', 'log': 'Starting connection to Gmail API...'})}\n\n"
-        
-        request = service.users().messages().list(userId='me', labelIds=['INBOX'], maxResults=MAX_MESSAGES_PER_PAGE)
-        
-        page_num = 1
-        while request is not None:
-            page_success = False
-            for attempt in range(MAX_RETRIES):
-                try:
-                    response = request.execute()
-                    msgs = response.get('messages', [])
-                    messages.extend(msgs)
-                    yield f"data: {json.dumps({'status': 'counting', 'count': len(messages), 'log': f'Fetched page {page_num} ({len(msgs)} items). Total: {len(messages)}'})}\n\n"
-                    
-                    if len(messages) > MAX_INBOX_SCAN_LIMIT:
-                        yield f"data: {json.dumps({'error': f'Inbox too large ({len(messages)}+). Limit is {MAX_INBOX_SCAN_LIMIT}.', 'type': 'cap_exceeded', 'count': len(messages), 'limit': MAX_INBOX_SCAN_LIMIT})}\n\n"
-                        return
+@app.route('/api/scan_status/<job_id>')
+def scan_status(job_id):
+    if session.get('scan_job_id') != job_id:
+        return jsonify({'error': 'unauthorized'}), 403
+    r = get_redis_client()
+    progress_raw = r.get(f'scan:{job_id}:progress')
+    if not progress_raw:
+        return jsonify({'status': 'pending'})
+    progress = json.loads(progress_raw)
+    log_offset = int(request.args.get('log_offset', 0))
+    logs_raw = r.lrange(f'scan:{job_id}:logs', log_offset, -1)
+    logs = [json.loads(l) for l in logs_raw]
+    progress['logs'] = logs
+    progress['log_offset'] = log_offset + len(logs)
+    return jsonify(progress)
 
-                    request = service.users().messages().list_next(request, response)
-                    page_success = True
-                    break 
-                except: time.sleep(2 ** attempt)
-            
-            if not page_success: return
-            page_num += 1
+@app.route('/api/scan_results/<job_id>')
+def scan_results(job_id):
+    if session.get('scan_job_id') != job_id:
+        return jsonify({'error': 'unauthorized'}), 403
+    r = get_redis_client()
+    results_raw = r.get(f'scan:{job_id}:results')
+    if not results_raw:
+        return jsonify({'error': 'Results not found'}), 404
+    return jsonify(json.loads(results_raw))
 
-        total_messages = len(messages)
-        yield f"data: {json.dumps({'log': f'List complete. Found {total_messages} emails. Starting Detail Scan...', 'level': 'success'})}\n\n"
-        
-        if total_messages == 0:
-            yield f"data: {json.dumps({'status': 'complete', 'data': []})}\n\n"
-            return
 
-        senders = []
-        total_batches = (total_messages // BATCH_SIZE) + (1 if total_messages % BATCH_SIZE > 0 else 0)
-        
-        for i in range(0, total_messages, BATCH_SIZE):
-            chunk = messages[i:i + BATCH_SIZE]
-            current_batch_num = (i // BATCH_SIZE) + 1
-            batch = service.new_batch_http_request()
-            
-            def batch_callback(request_id, response, exception):
-                if exception is None:
-                    headers = response['payload']['headers']
-                    from_header = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
-                    match = re.search(r'<(.+?)>', from_header)
-                    clean_email = match.group(1) if match else from_header
-                    senders.append(clean_email.lower().strip())
-
-            for msg in chunk:
-                batch.add(service.users().messages().get(userId='me', id=msg['id'], format='metadata', metadataHeaders=['From']), callback=batch_callback)
-            
-            try: batch.execute()
-            except: pass
-            
-            if current_batch_num % 5 == 0:
-                yield f"data: {json.dumps({'log': f'Batch {current_batch_num}/{total_batches} processed.'})}\n\n"
-
-            # CRITICAL: Ensuring fields exist for progress bar
-            current_processed = min(i + BATCH_SIZE, total_messages)
-            progress = int((current_processed / total_messages) * 100)
-            yield f"data: {json.dumps({'status': 'progress', 'processed': current_processed, 'total': total_messages, 'percent': progress})}\n\n"
-            
-            time.sleep(BATCH_SLEEP_SECONDS)
-
-        if senders:
-            counts = Counter(senders)
-            result_data = [{'email': email, 'count': count} for email, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))]
-        else:
-            result_data = []
-            
-        yield f"data: {json.dumps({'status': 'complete', 'data': result_data, 'log': 'Analysis Complete. Rendering table...', 'level': 'success'})}\n\n"
-
-    return Response(stream_with_context(generate()), mimetype='text/event-stream')
-
+# --- APPLY ACTIONS ---
 @app.route('/api/apply_actions', methods=['POST'])
 def apply_actions():
-    actions = request.json 
+    actions = request.json
     def generate_updates():
         service = get_service()
         if not service: return
@@ -300,7 +256,7 @@ def apply_actions():
                         msgs.extend(res.get('messages', []))
                         token = res.get('nextPageToken')
                         if not token: break
-                    
+
                     if msgs:
                         all_ids = [m['id'] for m in msgs]
                         for i in range(0, len(all_ids), BATCH_SIZE):
@@ -308,13 +264,12 @@ def apply_actions():
                             try: execute_with_retry(service.users().messages().batchModify(userId='me', body={'ids': ids, 'addLabelIds': ['TRASH']}))
                             except: pass
                             time.sleep(BATCH_SLEEP_SECONDS)
-                    
-                    # FIX: Emit real-time row_complete event
+
                     yield json.dumps({"status": "row_complete", "email": email, "action": "delete", "msg": "  - Emails deleted."}) + "\n"
 
                 elif action_type == 'label':
                     label_id = item['labelId']
-                    
+
                     filter_body = {'criteria': {'from': email}, 'action': {'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}}
                     try: execute_with_retry(service.users().settings().filters().create(userId='me', body=filter_body))
                     except: pass
@@ -334,15 +289,15 @@ def apply_actions():
                             try: execute_with_retry(service.users().messages().batchModify(userId='me', body={'ids': ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}))
                             except: pass
                             time.sleep(BATCH_SLEEP_SECONDS)
-                        
-                        # FIX: Emit real-time row_complete event
-                        yield json.dumps({"status": "row_complete", "email": email, "action": f"label:{label_id}", "msg": f"  - Moved {len(msgs)} emails."}) + "\n"
+
+                    yield json.dumps({"status": "row_complete", "email": email, "action": f"label:{label_id}", "msg": f"  - Moved {len(msgs)} emails."}) + "\n"
             except Exception as e:
                 yield json.dumps({"msg": f"Error: {str(e)}"}) + "\n"
-        
+
         yield json.dumps({"status": "complete"}) + "\n"
 
     return Response(stream_with_context(generate_updates()), mimetype='application/json')
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

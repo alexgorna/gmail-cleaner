@@ -274,7 +274,6 @@ def apply_actions():
             email = item['email']
             action_type = item['action']
             yield json.dumps({"msg": f"Processing: {email}..."}) + "\n"
-            time.sleep(BATCH_SLEEP_SECONDS) 
 
             try:
                 if action_type == 'delete':
@@ -307,11 +306,11 @@ def apply_actions():
                     msgs = []
                     token = None
                     while True:
-                        res = execute_with_retry(service.users().messages().list(userId='me', q=f"from:{email}", maxResults=MAX_MESSAGES_PER_PAGE, pageToken=token))
+                        res = execute_with_retry(service.users().messages().list(userId='me', q=f"in:inbox from:{email}", maxResults=MAX_MESSAGES_PER_PAGE, pageToken=token))
                         msgs.extend(res.get('messages', []))
                         token = res.get('nextPageToken')
                         if not token: break
-                    
+
                     if msgs:
                         all_ids = [m['id'] for m in msgs]
                         for i in range(0, len(all_ids), BATCH_SIZE):

@@ -277,6 +277,8 @@
     let labelOptionsHTML = "";
     let currentEditingRowEmail = null;
     let isBulkCreate = false;
+    let currentInboxCount = 0;
+    let sessionOrganizedCount = 0;
 
     window.onload = async function() {
         fetchUserInfo();
@@ -581,7 +583,12 @@
             } else if (data.status === 'complete') {
                 allData = data.data;
                 const totalEmails = allData.reduce((sum, item) => sum + item.count, 0);
-                document.getElementById('hero-status-content').innerHTML = `<h1 class="hero-title" style="margin-top: 10px;">You have <span class="hero-count">${totalEmails} emails</span> in your inbox.</h1>`;
+                currentInboxCount = totalEmails;
+                sessionOrganizedCount = 0;
+                document.getElementById('hero-status-content').innerHTML = `
+                    <h1 class="hero-title" style="margin-top: 10px;">You have <span class="hero-count" id="inbox-count-display">${totalEmails.toLocaleString()} emails</span> in your inbox.</h1>
+                    <p id="organized-summary" style="display:none; margin-top:10px; font-size:1rem; color:#475569; margin-bottom:0;">You successfully organized <span id="organized-count-display" style="color:#1DB954; font-weight:700;"></span>.</p>
+                `;
                 filteredData = allData;
                 renderTable();
                 scanEventSource.close();
@@ -742,6 +749,16 @@
                             if (row) {
                                 row.processedAction = jsonLog.action;
                                 delete pendingActions[jsonLog.email];
+                                sessionOrganizedCount += row.count;
+                                currentInboxCount = Math.max(0, currentInboxCount - row.count);
+                                const inboxDisplay = document.getElementById('inbox-count-display');
+                                if (inboxDisplay) inboxDisplay.textContent = currentInboxCount.toLocaleString() + ' emails';
+                                const organizedDisplay = document.getElementById('organized-count-display');
+                                const organizedSummary = document.getElementById('organized-summary');
+                                if (organizedDisplay && organizedSummary) {
+                                    organizedDisplay.textContent = sessionOrganizedCount.toLocaleString() + ' emails';
+                                    organizedSummary.style.display = 'block';
+                                }
                             }
                             
                             const select = document.querySelector(`.action-select[data-email="${jsonLog.email}"]`);

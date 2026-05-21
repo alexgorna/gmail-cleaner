@@ -254,6 +254,7 @@
             </div>
             <div class="modal-footer border-top-0 pt-0 pb-4">
                 <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button>
+                <button id="btn-apply-existing" type="button" class="btn btn-success px-4" onclick="applyExistingLabel()" style="display:none;"><i class="bi bi-folder-check me-1"></i>Apply Existing</button>
                 <button id="btn-create-confirm" type="button" class="btn btn-primary px-4" onclick="confirmLabelCreation()">Create Label</button>
             </div>
         </div>
@@ -424,6 +425,7 @@
         document.getElementById('label-suggestions').style.display = 'none';
         document.getElementById('label-suggestions').innerHTML = '';
         document.getElementById('label-duplicate-warning').style.display = 'none';
+        document.getElementById('btn-apply-existing').style.display = 'none';
         document.getElementById('create-label-error').style.display = 'none';
     }
 
@@ -443,6 +445,7 @@
         const exactMatch = existingLabels.some(l => l.type === 'user' && l.name.toLowerCase() === lowerQuery);
 
         warningDiv.style.display = exactMatch ? 'block' : 'none';
+        document.getElementById('btn-apply-existing').style.display = exactMatch ? 'inline-block' : 'none';
 
         if (matches.length === 0) {
             suggestionsDiv.style.display = 'none';
@@ -465,6 +468,27 @@
         document.getElementById('label-suggestions').style.display = 'none';
         const exactMatch = existingLabels.some(l => l.type === 'user' && l.name.toLowerCase() === name.toLowerCase());
         document.getElementById('label-duplicate-warning').style.display = exactMatch ? 'block' : 'none';
+        document.getElementById('btn-apply-existing').style.display = exactMatch ? 'inline-block' : 'none';
+    }
+
+    function applyExistingLabel() {
+        const query = document.getElementById('newLabelName').value.trim();
+        const match = existingLabels.find(l => l.type === 'user' && l.name.toLowerCase() === query.toLowerCase());
+        if (!match) return;
+
+        const labelVal = `label:${match.id}`;
+        if (isBulkCreate) {
+            applyBulkRowAction(labelVal);
+        } else if (currentEditingRowEmail) {
+            const rowSelect = document.querySelector(`.action-select[data-email="${currentEditingRowEmail}"]`);
+            if (rowSelect) {
+                rowSelect.value = labelVal;
+                handleActionChange(rowSelect);
+            }
+        }
+
+        bootstrap.Modal.getInstance(document.getElementById('labelModal')).hide();
+        logToScanDebugger(`Applied existing label: ${match.name}`, 'success');
     }
 
     function applyBulkRowAction(actionValue) {

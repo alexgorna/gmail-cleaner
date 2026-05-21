@@ -101,9 +101,9 @@
         .match-highlight { color:#0d6efd; font-weight:600; }
 
         /* Gmail search icon */
-        .gmail-search-link { color:#94a3b8; text-decoration:none; vertical-align:middle; opacity:0.5; transition:opacity 0.2s, color 0.2s; margin-left:7px; display:inline-flex; align-items:center; }
+        .gmail-search-link { color:#94a3b8; text-decoration:none; opacity:0.5; transition:opacity 0.15s, color 0.15s; margin-left:7px; font-size:0.8rem; vertical-align:middle; }
         .gmail-search-link:hover { color:#0d6efd; opacity:1; }
-        .gmail-search-link svg { width:13px; height:13px; }
+        .gmail-search-link:focus, .gmail-search-link:active { color:#94a3b8; opacity:0.5; outline:none; }
 
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
     </style>
@@ -370,7 +370,7 @@
             gmailLink.rel = 'noopener noreferrer';
             gmailLink.title = 'View in Gmail';
             gmailLink.className = 'gmail-search-link';
-            gmailLink.innerHTML = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><path d="M20 11a1 1 0 0 0-1 1v6a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6a1 1 0 0 0 0-2H6a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3v-6a1 1 0 0 0-1-1z"/><path d="M16 5h1.58l-6.29 6.28a1 1 0 0 0 0 1.42 1 1 0 0 0 1.42 0L19 6.42V8a1 1 0 0 0 1 1 1 1 0 0 0 1-1V4a1 1 0 0 0-1-1h-4a1 1 0 0 0 0 2z"/></svg>`;
+            gmailLink.innerHTML = `<i class="bi bi-box-arrow-up-right"></i>`;
             emailCell.appendChild(gmailLink);
             const select = tr.querySelector('select');
             select.value = selectedValue;

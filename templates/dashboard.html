@@ -93,6 +93,13 @@
         /* FIX: Dropdown Scrolling */
         .dropdown-menu { max-height: 300px; overflow-y: auto; }
 
+        /* Label suggestions */
+        #label-suggestions { display:none; position:absolute; z-index:1055; width:100%; background:white; border:1px solid #dee2e6; border-radius:8px; max-height:200px; overflow-y:auto; box-shadow:0 4px 12px rgba(0,0,0,0.12); margin-top:4px; }
+        .suggestion-item { padding:9px 14px; cursor:pointer; font-size:0.875rem; color:#334155; border-bottom:1px solid #f1f5f9; }
+        .suggestion-item:last-child { border-bottom:none; }
+        .suggestion-item:hover { background-color:#f0f4ff; }
+        .match-highlight { color:#0d6efd; font-weight:600; }
+
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
@@ -229,9 +236,13 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body pt-4">
-                <div class="mb-3">
+                <div class="mb-3" style="position:relative;">
                     <label class="form-label small text-muted text-uppercase fw-bold">Label Name</label>
-                    <input type="text" class="form-control form-control-lg bg-light border-0" id="newLabelName" placeholder="e.g. Newsletters">
+                    <input type="text" class="form-control form-control-lg bg-light border-0" id="newLabelName" placeholder="e.g. Newsletters" oninput="filterLabelSuggestions()" autocomplete="off">
+                    <div id="label-suggestions"></div>
+                </div>
+                <div id="label-duplicate-warning" class="alert alert-warning py-2 px-3 small mb-2" style="display:none;">
+                    <i class="bi bi-exclamation-triangle-fill me-1"></i> A label with this exact name already exists.
                 </div>
                 <div class="form-check mb-2">
                     <input class="form-check-input" type="checkbox" id="nestLabelCheck" onchange="toggleNestDropdown()">
@@ -405,7 +416,55 @@
         isBulkCreate = true;
         currentEditingRowEmail = null;
         document.getElementById('newLabelName').value = '';
+        resetLabelModalState();
         new bootstrap.Modal(document.getElementById('labelModal')).show();
+    }
+
+    function resetLabelModalState() {
+        document.getElementById('label-suggestions').style.display = 'none';
+        document.getElementById('label-suggestions').innerHTML = '';
+        document.getElementById('label-duplicate-warning').style.display = 'none';
+        document.getElementById('create-label-error').style.display = 'none';
+    }
+
+    function filterLabelSuggestions() {
+        const query = document.getElementById('newLabelName').value.trim();
+        const suggestionsDiv = document.getElementById('label-suggestions');
+        const warningDiv = document.getElementById('label-duplicate-warning');
+
+        if (!query) {
+            suggestionsDiv.style.display = 'none';
+            warningDiv.style.display = 'none';
+            return;
+        }
+
+        const lowerQuery = query.toLowerCase();
+        const matches = existingLabels.filter(l => l.type === 'user' && l.name.toLowerCase().includes(lowerQuery));
+        const exactMatch = existingLabels.some(l => l.type === 'user' && l.name.toLowerCase() === lowerQuery);
+
+        warningDiv.style.display = exactMatch ? 'block' : 'none';
+
+        if (matches.length === 0) {
+            suggestionsDiv.style.display = 'none';
+            return;
+        }
+
+        suggestionsDiv.innerHTML = matches.slice(0, 10).map(l => {
+            const idx = l.name.toLowerCase().indexOf(lowerQuery);
+            const highlighted = l.name.slice(0, idx)
+                + '<span class="match-highlight">' + l.name.slice(idx, idx + query.length) + '</span>'
+                + l.name.slice(idx + query.length);
+            const safeName = l.name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            return `<div class="suggestion-item" onmousedown="selectLabelSuggestion('${safeName}')"><i class="bi bi-folder me-2 text-muted"></i>${highlighted}</div>`;
+        }).join('');
+        suggestionsDiv.style.display = 'block';
+    }
+
+    function selectLabelSuggestion(name) {
+        document.getElementById('newLabelName').value = name;
+        document.getElementById('label-suggestions').style.display = 'none';
+        const exactMatch = existingLabels.some(l => l.type === 'user' && l.name.toLowerCase() === name.toLowerCase());
+        document.getElementById('label-duplicate-warning').style.display = exactMatch ? 'block' : 'none';
     }
 
     function applyBulkRowAction(actionValue) {
@@ -484,6 +543,7 @@
             currentEditingRowEmail = email;
             isBulkCreate = false;
             document.getElementById('newLabelName').value = '';
+            resetLabelModalState();
             new bootstrap.Modal(document.getElementById('labelModal')).show();
         } else if (val.startsWith('label:')) {
             const labelId = val.split(':')[1];

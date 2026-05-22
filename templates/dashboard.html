@@ -924,44 +924,73 @@
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Thinking...';
 
         const senderCount = allData.length;
-        logToScanDebugger(`AI: sending ${senderCount} senders to DeepSeek...`, 'info');
+        logToScanDebugger(`AI: sending ${senderCount} senders to DeepSeek (background job)...`, 'info');
         const t0 = Date.now();
 
         const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        let jobId = null;
+
         try {
-            const res = await fetch('/api/suggest_labels', {
+            // Step 1: Start the background job
+            const startRes = await fetch('/api/suggest_labels', {
                 method: 'POST',
                 headers: { 'X-CSRFToken': csrfToken }
             });
-            const data = await res.json().catch(() => ({}));
-            const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+            const startData = await startRes.json().catch(() => ({}));
 
-            if (!res.ok) {
-                const meta = data._meta || {};
-                logToScanDebugger(
-                    `AI error after ${elapsed}s — ${data.error || `HTTP ${res.status}`}` +
-                    (meta.senders_sent ? ` (sent ${meta.senders_sent} senders)` : ''),
-                    'error'
-                );
-                throw new Error(data.error || `HTTP ${res.status}`);
+            if (!startRes.ok) {
+                throw new Error(startData.error || `HTTP ${startRes.status}`);
             }
 
-            const meta = data._meta || {};
-            logToScanDebugger(
-                `AI: ${elapsed}s — ${meta.senders_sent ?? '?'} senders → ${meta.groups ?? '?'} groups` +
-                (meta.labels_sent ? ` (${meta.labels_sent} existing labels shared)` : ''),
-                'success'
-            );
+            jobId = startData.job_id;
+            logToScanDebugger(`AI: job started — ${startData.senders_sent ?? senderCount} senders queued`, 'info');
+
+            // Step 2: Poll for status
+            let lastMessage = '';
+            while (true) {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+
+                const statusRes = await fetch(`/api/ai_status/${jobId}`);
+                const status = await statusRes.json().catch(() => ({}));
+
+                if (!statusRes.ok || status.error) {
+                    throw new Error(status.error || `Status HTTP ${statusRes.status}`);
+                }
+
+                if (status.message && status.message !== lastMessage) {
+                    logToScanDebugger(`AI: ${status.message}`, 'info');
+                    lastMessage = status.message;
+                }
+
+                if (status.status === 'failed') {
+                    throw new Error(status.error || 'AI job failed');
+                }
+
+                if (status.status === 'complete') {
+                    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+                    logToScanDebugger(
+                        `AI: ${elapsed}s — ${status.senders_sent ?? '?'} senders → ${status.groups ?? '?'} groups`,
+                        'success'
+                    );
+                    break;
+                }
+            }
+
+            // Step 3: Fetch results
+            const resultsRes = await fetch(`/api/ai_results/${jobId}`);
+            const data = await resultsRes.json().catch(() => ({}));
+
+            if (!resultsRes.ok) {
+                throw new Error(data.error || `Results HTTP ${resultsRes.status}`);
+            }
 
             processAISuggestions(data);
             btn.innerHTML = '<i class="bi bi-stars me-1"></i> AI';
             btn.disabled = false;
+
         } catch (err) {
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-            // Only log if not already logged above
-            if (!err.message.includes('HTTP') && !err.message.includes('senders')) {
-                logToScanDebugger(`AI failed after ${elapsed}s: ${err.message}`, 'error');
-            }
+            logToScanDebugger(`AI failed after ${elapsed}s: ${err.message}`, 'error');
             btn.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i> AI Unavailable';
             setTimeout(() => {
                 btn.innerHTML = '<i class="bi bi-stars me-1"></i> AI';

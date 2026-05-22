@@ -11,6 +11,7 @@ from celery_app import celery_app
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+import ai_labeler
 
 # --- CONSTANTS (mirror app.py values) ---
 BATCH_SIZE = 18
@@ -170,3 +171,41 @@ def run_inbox_scan(job_id, credentials_dict):
     except Exception as e:
         set_progress(r, job_id, {'status': 'failed', 'error': str(e)})
         append_log(r, job_id, f'Fatal error: {e}', 'error')
+
+
+# ── AI Label Suggestions ───────────────────────────────────────────────────────
+
+AI_JOB_TTL = 3600  # Redis key expiry: 1 hour
+
+
+def _set_ai_status(r, job_id, data):
+    r.setex(f'ai:{job_id}:status', AI_JOB_TTL, json.dumps(data))
+
+
+@celery_app.task
+def run_ai_suggestions(job_id, senders, label_names):
+    """
+    Call DeepSeek in the background worker (no HTTP timeout constraint).
+    Writes status to ai:{job_id}:status and results to ai:{job_id}:result.
+    """
+    r = get_redis_client()
+    _set_ai_status(r, job_id, {
+        'status': 'running',
+        'message': f'Asking DeepSeek to analyse {len(senders)} senders…',
+    })
+
+    try:
+        result = ai_labeler.suggest_labels(senders, label_names)
+        group_count = len(result.get('suggestions', []))
+        r.setex(f'ai:{job_id}:result', AI_JOB_TTL, json.dumps(result))
+        _set_ai_status(r, job_id, {
+            'status': 'complete',
+            'groups': group_count,
+            'senders_sent': len(senders),
+        })
+    except Exception as e:
+        _set_ai_status(r, job_id, {
+            'status': 'failed',
+            'error': str(e),
+            'senders_sent': len(senders),
+        })

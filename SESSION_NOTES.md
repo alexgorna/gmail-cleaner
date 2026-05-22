@@ -1,9 +1,9 @@
 # Session Notes — May 21, 2026
 
 ## Project Overview
-Gmail Cleaner is a Flask web app that connects via Google OAuth and helps bulk-organize a Gmail inbox by sender. It scans the inbox as a background job (Celery + Redis), shows a ranked table of senders by email count, and lets the user bulk-delete or label emails from each sender.
+Gmail Cleaner is a Flask web app that connects via Google OAuth and helps bulk-organize a Gmail inbox by sender. It scans the inbox in real time (Server-Sent Events), shows a ranked table of senders by email count, and lets the user bulk-delete or label emails from each sender.
 
-Stack: Python/Flask, Celery, Gmail API, Bootstrap 5, Vanilla JS, Redis (sessions + job state), deployed on Railway via Gunicorn (web) + Celery worker.
+Stack: Python/Flask, Gmail API, Bootstrap 5, Vanilla JS, Redis sessions, deployed on Railway via Gunicorn.
 
 ---
 
@@ -167,7 +167,7 @@ Stack: Python/Flask, Celery, Gmail API, Bootstrap 5, Vanilla JS, Redis (sessions
 ---
 
 ### 12. Feature — "Processing..." Blinking State During Apply Actions
-**Commit:** deployed ✓
+**Commit:** pending deployment
 
 **What it does:**
 - As soon as Apply Actions is clicked, the "You successfully organized X emails" line (whether previously visible or not) switches to "Processing..." with three blinking animated dots
@@ -180,7 +180,7 @@ Stack: Python/Flask, Celery, Gmail API, Bootstrap 5, Vanilla JS, Redis (sessions
 ---
 
 ### 13. Architecture — Background Job Refactor (Celery + Redis)
-**Commit:** `00916a4` — deployed ✓ (Railway: web + worker + Redis all Online)
+**Commit:** pending deployment
 
 **Motivation:** The SSE-based scan held an HTTP connection open for the full duration of Phase 2 (up to 3–4 minutes for large inboxes). This caused Railway proxy timeouts, required a 600s Gunicorn timeout, and made concurrent users impossible since each scan occupied a long-running thread. With commercialization in mind, this was the highest-leverage architectural change to make first.
 

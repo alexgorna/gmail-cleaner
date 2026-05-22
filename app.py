@@ -15,8 +15,7 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from tasks import run_inbox_scan
-import ai_labeler
+from tasks import run_inbox_scan, run_ai_suggestions
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -227,21 +226,18 @@ def scan_results(job_id):
     return jsonify(json.loads(results_raw))
 
 
-# --- AI LABEL SUGGESTIONS ---
+# --- AI LABEL SUGGESTIONS (async — runs in Celery worker) ---
 @app.route('/api/suggest_labels', methods=['POST'])
 def suggest_labels():
-    if not ai_labeler.AI_LABELING_ENABLED:
-        return jsonify({'error': 'AI labeling is disabled'}), 503
-
     if not get_creds():
         return jsonify({'error': 'Not logged in'}), 401
 
-    job_id = session.get('scan_job_id')
-    if not job_id:
+    scan_job_id = session.get('scan_job_id')
+    if not scan_job_id:
         return jsonify({'error': 'No scan results available — run a scan first.'}), 400
 
     r = get_redis_client()
-    results_raw = r.get(f'scan:{job_id}:results')
+    results_raw = r.get(f'scan:{scan_job_id}:results')
     if not results_raw:
         return jsonify({'error': 'Scan results expired — please scan again.'}), 400
 
@@ -261,21 +257,33 @@ def suggest_labels():
     except Exception as e:
         print(f"Label fetch for AI failed: {e}")
 
-    print(f"[suggest_labels] Starting: {len(senders)} senders, {len(label_names)} labels")
-    try:
-        result = ai_labeler.suggest_labels(senders, label_names)
-        group_count = len(result.get('suggestions', []))
-        print(f"[suggest_labels] OK: {group_count} groups returned")
-        result['_meta'] = {
-            'senders_sent': len(senders),
-            'labels_sent':  len(label_names),
-            'groups':       group_count,
-        }
-        return jsonify(result)
-    except Exception as e:
-        msg = str(e)
-        print(f"[suggest_labels] Error: {msg}")
-        return jsonify({'error': msg, '_meta': {'senders_sent': len(senders)}}), 503
+    ai_job_id = str(uuid.uuid4())
+    session['ai_job_id'] = ai_job_id
+    run_ai_suggestions.delay(ai_job_id, senders, label_names)
+    print(f"[suggest_labels] Queued job {ai_job_id} — {len(senders)} senders, {len(label_names)} labels")
+    return jsonify({'job_id': ai_job_id, 'senders_sent': len(senders)})
+
+
+@app.route('/api/ai_status/<job_id>')
+def ai_status(job_id):
+    if session.get('ai_job_id') != job_id:
+        return jsonify({'error': 'unauthorized'}), 403
+    r = get_redis_client()
+    raw = r.get(f'ai:{job_id}:status')
+    if not raw:
+        return jsonify({'status': 'pending'})
+    return jsonify(json.loads(raw))
+
+
+@app.route('/api/ai_results/<job_id>')
+def ai_results(job_id):
+    if session.get('ai_job_id') != job_id:
+        return jsonify({'error': 'unauthorized'}), 403
+    r = get_redis_client()
+    raw = r.get(f'ai:{job_id}:result')
+    if not raw:
+        return jsonify({'error': 'Results not found'}), 404
+    return jsonify(json.loads(raw))
 
 
 # --- APPLY ACTIONS ---

@@ -3,14 +3,15 @@ AI Label Suggester — pluggable email grouping & Gmail label suggestion.
 
 Feature flag : AI_LABELING_ENABLED   (default: true)  — set to "false" to disable entirely
 Provider      : AI_PROVIDER           (default: deepseek) — swap to "openai" or any key in PROVIDER_CONFIGS
-Max senders   : AI_MAX_SENDERS        (default: 1000)
-Timeout       : AI_TIMEOUT_SECONDS    (default: 60)
+Max senders   : AI_MAX_SENDERS        (default: 500)
+Timeout       : AI_TIMEOUT_SECONDS    (default: 90)
 
 To add a new provider: add an entry to PROVIDER_CONFIGS and set AI_PROVIDER=<key>.
 To disable entirely:   set AI_LABELING_ENABLED=false — no API calls will be made.
 """
 
 import os
+import re
 import json
 import requests as _http
 
@@ -19,8 +20,8 @@ AI_LABELING_ENABLED = os.environ.get('AI_LABELING_ENABLED', 'true').lower() == '
 
 # ── Runtime config ─────────────────────────────────────────────────────────────
 AI_PROVIDER        = os.environ.get('AI_PROVIDER', 'deepseek')
-AI_MAX_SENDERS     = int(os.environ.get('AI_MAX_SENDERS', '1000'))
-AI_TIMEOUT_SECONDS = int(os.environ.get('AI_TIMEOUT_SECONDS', '60'))
+AI_MAX_SENDERS     = int(os.environ.get('AI_MAX_SENDERS', '500'))
+AI_TIMEOUT_SECONDS = int(os.environ.get('AI_TIMEOUT_SECONDS', '90'))
 
 # ── Provider registry ──────────────────────────────────────────────────────────
 # To swap providers: add an entry here and set AI_PROVIDER=<key> in env.
@@ -112,13 +113,40 @@ def suggest_labels(senders: list, existing_labels: list) -> dict:
     # Respect sender cap
     senders = senders[:AI_MAX_SENDERS]
 
+    # First attempt with up to AI_MAX_SENDERS
+    try:
+        return _call_provider(config, api_key, senders, existing_labels)
+    except (json.JSONDecodeError, ValueError) as e:
+        # Malformed or truncated JSON — retry with half the senders
+        half = max(50, len(senders) // 2)
+        print(f"[ai_labeler] JSON parse failed ({e}), retrying with {half} senders (was {len(senders)})")
+        return _call_provider(config, api_key, senders[:half], existing_labels)
+
+
+def _clean_json(raw: str) -> str:
+    """Strip markdown fences and extract the outermost JSON object."""
+    text = raw.strip()
+    # Strip ```json ... ``` or ``` ... ``` fences
+    text = re.sub(r'^```[a-z]*\s*', '', text)
+    text = re.sub(r'\s*```$', '', text)
+    text = text.strip()
+    # Find the outermost { ... }
+    start = text.find('{')
+    end   = text.rfind('}')
+    if start != -1 and end > start:
+        text = text[start:end + 1]
+    return text
+
+
+def _call_provider(config: dict, api_key: str, senders: list, existing_labels: list) -> dict:
+    """Make one API call and return parsed JSON. Raises on HTTP or JSON error."""
     label_block = '\n'.join(existing_labels) if existing_labels else '(none)'
     user_message = (
         f"SENDER LIST ({len(senders)} addresses):\n"
         + '\n'.join(senders)
         + f"\n\nEXISTING LABELS ({len(existing_labels)}):\n"
         + label_block
-        + "\n\nPlease group these senders and return Gmail label suggestions as JSON."
+        + "\n\nGroup these senders and return Gmail label suggestions as JSON."
     )
 
     payload = {
@@ -128,7 +156,7 @@ def suggest_labels(senders: list, existing_labels: list) -> dict:
             {'role': 'user',   'content': user_message},
         ],
         'response_format': {'type': 'json_object'},
-        'max_tokens': 8000,
+        'max_tokens': 16000,
         'temperature': 0.3,
     }
 
@@ -143,5 +171,15 @@ def suggest_labels(senders: list, existing_labels: list) -> dict:
     )
     response.raise_for_status()
 
-    content = response.json()['choices'][0]['message']['content']
-    return json.loads(content)
+    body    = response.json()
+    choice  = body['choices'][0]
+    content = choice['message']['content']
+
+    # Warn if the model hit its output token limit (response may be truncated)
+    finish_reason = choice.get('finish_reason', '')
+    if finish_reason == 'length':
+        print(f"[ai_labeler] finish_reason=length — response truncated at {len(content)} chars. "
+              f"Consider reducing AI_MAX_SENDERS (currently {len(senders)}).")
+
+    cleaned = _clean_json(content)
+    return json.loads(cleaned)

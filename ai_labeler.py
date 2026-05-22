@@ -182,7 +182,7 @@ def _call_provider(config: dict, api_key: str, senders: list, existing_labels: l
             {'role': 'user',   'content': user_message},
         ],
         'response_format': {'type': 'json_object'},
-        'max_tokens': 16000,
+        'max_tokens': 4000,
         'temperature': 0.3,
     }
 

@@ -5,6 +5,7 @@ import time
 import redis
 import httplib2
 import google_auth_httplib2
+import concurrent.futures
 from collections import Counter
 
 from celery_app import celery_app
@@ -193,6 +194,12 @@ def _set_ai_status(r, job_id, data):
     r.setex(f'ai:{job_id}:status', AI_JOB_TTL, json.dumps(data))
 
 
+# Hard wall-clock timeout for the entire AI call (connect + generate + transfer).
+# Slightly longer than AI_TIMEOUT_SECONDS so the requests-level timeout fires first
+# under normal conditions; this is a belt-and-suspenders kill-switch.
+AI_HARD_TIMEOUT = int(os.environ.get('AI_TIMEOUT_SECONDS', '90')) + 30
+
+
 @celery_app.task
 def run_ai_suggestions(job_id, senders, label_names):
     """
@@ -206,7 +213,19 @@ def run_ai_suggestions(job_id, senders, label_names):
     })
 
     try:
-        result = ai_labeler.suggest_labels(senders, label_names)
+        # Run the AI call in a thread so we can impose a hard wall-clock timeout.
+        # The requests-level timeout=(10, 90) catches most hangs; this catches the rest
+        # (e.g. keepalive bytes that reset the per-chunk timer).
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(ai_labeler.suggest_labels, senders, label_names)
+            try:
+                result = future.result(timeout=AI_HARD_TIMEOUT)
+            except concurrent.futures.TimeoutError:
+                raise TimeoutError(
+                    f'AI call exceeded hard timeout of {AI_HARD_TIMEOUT}s — '
+                    f'no response from provider after {len(senders)} senders'
+                )
+
         group_count = len(result.get('suggestions', []))
         r.setex(f'ai:{job_id}:result', AI_JOB_TTL, json.dumps(result))
         _set_ai_status(r, job_id, {

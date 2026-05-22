@@ -338,6 +338,83 @@ Railway runs both `web` and `worker` processes from the same deploy. On other pl
 
 ---
 
+### 20. Fix — Wrong DeepSeek Model Name (5-Minute Hangs)
+**Commit:** `6af2bc6` — deployed ✓
+
+**Problem:** The AI button would queue a job and then hang for 5+ minutes with status "running", eventually timing out.
+
+**Root cause 1 — invalid model name:** `PROVIDER_CONFIGS` had `model: 'deepseek-v4-flash'`, which doesn't exist. DeepSeek's API silently routed invalid model names to `deepseek-reasoner` (R1), their chain-of-thought reasoning model. R1 works through problems step-by-step before answering and routinely takes 5–10 minutes for a prompt of this size. The correct fast/cheap model name is `deepseek-chat` (DeepSeek V3).
+
+**Root cause 2 — ineffective timeout:** `requests` was called with `timeout=90` (a single int). This form only covers the time until the first byte of the HTTP response is received — once DeepSeek sent back `200 OK` headers, the 90-second timer stopped, allowing the response body to stream indefinitely.
+
+**Fixes:**
+- Model corrected: `'deepseek-v4-flash'` → `'deepseek-chat'` in `PROVIDER_CONFIGS`.
+- Timeout changed to `timeout=(10, 90)` — the tuple form sets a 10-second connect timeout and a 90-second *read* timeout applied per chunk. If the server goes silent for 90 seconds between bytes, a `ReadTimeout` is raised and the Celery task catches it, setting status to `failed`.
+
+**Files changed:** `ai_labeler.py`
+
+---
+
+### 21. Feature — Highlight Rows Where AI Has Been Applied
+**Commit:** `7dced13` — deployed ✓
+
+**What it does:**
+- Clicking **Apply AI** on a row immediately gives it a light blue background with a blue left border, so the user can see at a glance which rows they've already acted on.
+- The highlight persists through pagination, search filtering, and `renderTable()` re-renders — it's stored in a JS `Set` (`aiAppliedRows`), not just a CSS class on the live DOM element.
+- If the user later clicks **Apply Actions** and the row moves to the greyed-out `row-processed` state, that takes visual priority over the AI highlight.
+- Running a new inbox scan resets `aiAppliedRows` so highlights don't carry over between sessions.
+
+**Implementation:**
+- `let aiAppliedRows = new Set()` declared alongside `aiSuggestions`.
+- `applyAISuggestion()` calls `aiAppliedRows.add(email)` and immediately sets `tr.className = 'row-ai-applied'` on the live row element (no full re-render needed).
+- `renderTable()` checks `aiAppliedRows.has(row.email)` and sets the class during each rebuild.
+- CSS: `.row-ai-applied { background-color: #eff6ff; border-left: 3px solid #3b82f6; }`
+
+**Files changed:** `templates/dashboard.html`
+
+---
+
+### 22. Fix — Remove Broken `via.placeholder.com` Avatar Fallback
+**Commit:** `8263e33` — deployed ✓
+
+**Problem:** The user avatar `<img>` tag used `https://via.placeholder.com/32` as its initial `src`. The app replaced this with the real Google profile picture once `/api/user_info` returned, but in the meantime the browser tried to fetch from `via.placeholder.com` — a third-party service that has been unreliable and frequently down — producing a `net::ERR_CONNECTION_CLOSED` error in the console on every page load.
+
+**Fix:** Replaced the external URL with an inline SVG data URI — a simple grey circle with a white silhouette figure. No external request is ever made. The Google profile picture still loads on top of it as before.
+
+**Files changed:** `templates/dashboard.html`
+
+---
+
+### 23. Feature — Skip Inbox / Auto Label Checkboxes Per Label Row
+**Commit:** `30156f2` — deployed ✓
+
+**What it does:**
+- Whenever a label is selected in a row's action dropdown, two small checkboxes appear directly below it: **Skip Inbox** and **Auto Label**, both checked by default.
+- The four combinations give the user full control over what happens to emails from that sender:
+
+| Skip Inbox | Auto Label | Behaviour |
+|---|---|---|
+| ✓ | ✓ | Default (unchanged) — existing inbox emails archived to label; Gmail filter created so future emails also skip inbox |
+| ✓ | ✗ | One-time cleanup — existing emails archived, no filter created (future emails land in inbox as normal) |
+| ✗ | ✓ | Tag only — existing emails get the label but stay in inbox; filter created so future emails are also tagged (but not archived) |
+| ✗ | ✗ | Label existing emails as a tag only, no filter — completely non-destructive |
+
+**Implementation details:**
+- `pendingActions[email]` extended with `skipInbox: bool` and `autoLabel: bool` (both default `true`).
+- `handleActionChange()` sets defaults when a label is first selected, preserving any values already set if the user switches between labels on the same row.
+- `toggleLabelOption(checkboxEl, field)` updates the relevant flag in `pendingActions` on each checkbox change.
+- Checkboxes are rendered inside the action `<td>` via `tr.innerHTML` in `renderTable()`, with their `checked` state and `display` driven from `pendingActions[email]` — so they survive pagination and filter changes correctly.
+- `app.py apply_actions` reads `item.get('skipInbox', True)` and `item.get('autoLabel', True)`:
+  - Filter creation is skipped entirely when `autoLabel` is false.
+  - When `autoLabel` is true, `removeLabelIds: ['INBOX']` is included in the filter action only when `skipInbox` is true.
+  - `batchModify` on existing messages omits `removeLabelIds: ['INBOX']` when `skipInbox` is false.
+
+**Backlog note:** Unsubscribe support (detect `List-Unsubscribe` header during scan, handle `mailto:` / one-click POST / manual link) deferred to future iteration.
+
+**Files changed:** `app.py`, `templates/dashboard.html`
+
+---
+
 ## Pending / Next Steps
 - End-to-end test of AI suggestions on the live app
 - Consider pinning versions in `requirements.txt` to prevent future silent regressions from library upgrades

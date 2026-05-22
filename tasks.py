@@ -17,7 +17,6 @@ BATCH_SIZE = 18
 BATCH_SLEEP_SECONDS = 0.2
 MAX_RETRIES = 5
 MAX_MESSAGES_PER_PAGE = 500
-MAX_INBOX_SCAN_LIMIT = 15000
 JOB_TTL = 7200  # Redis key expiry: 2 hours
 
 
@@ -79,15 +78,6 @@ def run_inbox_scan(job_id, credentials_dict):
                     msgs = response.get('messages', [])
                     messages.extend(msgs)
                     append_log(r, job_id, f'Fetched page {page_num} ({len(msgs)} items). Total: {len(messages)}')
-
-                    if len(messages) > MAX_INBOX_SCAN_LIMIT:
-                        set_progress(r, job_id, {
-                            'status': 'failed',
-                            'error': 'cap_exceeded',
-                            'count': len(messages),
-                            'limit': MAX_INBOX_SCAN_LIMIT
-                        })
-                        return
 
                     list_req = service.users().messages().list_next(list_req, response)
                     page_success = True

@@ -1248,12 +1248,18 @@
 
     function _selectLabelInRow(email, labelId, labelName) {
         // Always record the pending action first — this survives any subsequent DOM rebuild.
-        pendingActions[email] = { action: 'label', labelId, labelName };
-        // Also update the visible dropdown if the row is currently rendered.
+        // Preserve existing skipInbox/autoLabel if already set (e.g. user toggled them before AI applied).
+        const prev = pendingActions[email] || {};
+        pendingActions[email] = {
+            action: 'label', labelId, labelName,
+            skipInbox: prev.skipInbox !== false,
+            autoLabel: prev.autoLabel !== false,
+        };
+        // Also update the visible dropdown and show the label-options checkboxes.
         const select = document.querySelector(`.action-select[data-email="${CSS.escape(email)}"]`);
-        if (select) {
-            select.value = `label:${labelId}`;
-        }
+        if (select) select.value = `label:${labelId}`;
+        const optionsDiv = document.querySelector(`.label-options[data-email="${CSS.escape(email)}"]`);
+        if (optionsDiv) optionsDiv.style.display = 'flex';
     }
 
     function dismissAISuggestion(email) {

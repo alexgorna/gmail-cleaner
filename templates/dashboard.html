@@ -923,18 +923,24 @@
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Thinking...';
 
-        const senderCount = allData.length;
-        logToScanDebugger(`AI: sending ${senderCount} senders to DeepSeek (background job)...`, 'info');
+        // Only send the senders currently visible on screen
+        const _start = (currentPage - 1) * rowsPerPage;
+        const _end = _start + rowsPerPage;
+        const displayedSenders = filteredData.slice(_start, _end).map(row => row.email);
+        const senderCount = displayedSenders.length;
+
+        logToScanDebugger(`AI: sending ${senderCount} senders (background job)...`, 'info');
         const t0 = Date.now();
 
         const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
         let jobId = null;
 
         try {
-            // Step 1: Start the background job
+            // Step 1: Start the background job with only displayed senders
             const startRes = await fetch('/api/suggest_labels', {
                 method: 'POST',
-                headers: { 'X-CSRFToken': csrfToken }
+                headers: { 'X-CSRFToken': csrfToken, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ senders: displayedSenders })
             });
             const startData = await startRes.json().catch(() => ({}));
 

@@ -185,13 +185,13 @@ def _set_ai_status(r, job_id, data):
 @celery_app.task
 def run_ai_suggestions(job_id, senders, label_names):
     """
-    Call DeepSeek in the background worker (no HTTP timeout constraint).
+    Call the AI provider in the background worker (no HTTP timeout constraint).
     Writes status to ai:{job_id}:status and results to ai:{job_id}:result.
     """
     r = get_redis_client()
     _set_ai_status(r, job_id, {
         'status': 'running',
-        'message': f'Asking DeepSeek to analyse {len(senders)} senders…',
+        'message': f'Analysing {len(senders)} senders…',
     })
 
     try:

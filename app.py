@@ -232,17 +232,21 @@ def suggest_labels():
     if not get_creds():
         return jsonify({'error': 'Not logged in'}), 401
 
-    scan_job_id = session.get('scan_job_id')
-    if not scan_job_id:
-        return jsonify({'error': 'No scan results available — run a scan first.'}), 400
+    # Accept an explicit sender list from the frontend (e.g. displayed rows only),
+    # falling back to the full scan results if none provided.
+    body = request.json or {}
+    senders = body.get('senders')
 
-    r = get_redis_client()
-    results_raw = r.get(f'scan:{scan_job_id}:results')
-    if not results_raw:
-        return jsonify({'error': 'Scan results expired — please scan again.'}), 400
-
-    scan_data = json.loads(results_raw)
-    senders = [item['email'] for item in scan_data]
+    if not senders:
+        scan_job_id = session.get('scan_job_id')
+        if not scan_job_id:
+            return jsonify({'error': 'No scan results available — run a scan first.'}), 400
+        r = get_redis_client()
+        results_raw = r.get(f'scan:{scan_job_id}:results')
+        if not results_raw:
+            return jsonify({'error': 'Scan results expired — please scan again.'}), 400
+        scan_data = json.loads(results_raw)
+        senders = [item['email'] for item in scan_data]
 
     # Fetch the user's current label list from Gmail
     label_names = []

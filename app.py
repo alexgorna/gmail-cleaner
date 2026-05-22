@@ -232,21 +232,31 @@ def suggest_labels():
     if not get_creds():
         return jsonify({'error': 'Not logged in'}), 401
 
-    # Accept an explicit sender list from the frontend (e.g. displayed rows only),
+    # Always load scan results so we can enrich senders with subjects.
+    r = get_redis_client()
+    scan_data = None
+    scan_job_id = session.get('scan_job_id')
+    if scan_job_id:
+        results_raw = r.get(f'scan:{scan_job_id}:results')
+        if results_raw:
+            scan_data = json.loads(results_raw)
+
+    # Accept an explicit sender list (displayed rows) from the frontend,
     # falling back to the full scan results if none provided.
     body = request.json or {}
     senders = body.get('senders')
 
     if not senders:
-        scan_job_id = session.get('scan_job_id')
-        if not scan_job_id:
+        if not scan_data:
             return jsonify({'error': 'No scan results available — run a scan first.'}), 400
-        r = get_redis_client()
-        results_raw = r.get(f'scan:{scan_job_id}:results')
-        if not results_raw:
-            return jsonify({'error': 'Scan results expired — please scan again.'}), 400
-        scan_data = json.loads(results_raw)
         senders = [item['email'] for item in scan_data]
+
+    # Enrich each sender with up to 3 representative subjects for better AI context
+    subjects_map = {item['email']: item.get('subjects', []) for item in (scan_data or [])}
+    senders_with_subjects = [
+        {'email': email, 'subjects': subjects_map.get(email, [])}
+        for email in senders
+    ]
 
     # Fetch the user's current label list from Gmail
     label_names = []
@@ -263,9 +273,9 @@ def suggest_labels():
 
     ai_job_id = str(uuid.uuid4())
     session['ai_job_id'] = ai_job_id
-    run_ai_suggestions.delay(ai_job_id, senders, label_names)
-    print(f"[suggest_labels] Queued job {ai_job_id} — {len(senders)} senders, {len(label_names)} labels")
-    return jsonify({'job_id': ai_job_id, 'senders_sent': len(senders)})
+    run_ai_suggestions.delay(ai_job_id, senders_with_subjects, label_names)
+    print(f"[suggest_labels] Queued job {ai_job_id} — {len(senders_with_subjects)} senders, {len(label_names)} labels")
+    return jsonify({'job_id': ai_job_id, 'senders_sent': len(senders_with_subjects)})
 
 
 @app.route('/api/ai_status/<job_id>')

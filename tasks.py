@@ -102,8 +102,10 @@ def run_inbox_scan(job_id, credentials_dict):
             })
             return
 
-        # --- Phase 2: Batch fetch From headers ---
+        # --- Phase 2: Batch fetch From + Subject headers ---
         senders = []
+        subjects_by_email = {}  # email -> [subject, ...] (up to 3 per sender)
+        MAX_SUBJECTS = 3
         total_batches = (total_messages // BATCH_SIZE) + (1 if total_messages % BATCH_SIZE > 0 else 0)
 
         for i in range(0, total_messages, BATCH_SIZE):
@@ -111,19 +113,27 @@ def run_inbox_scan(job_id, credentials_dict):
             current_batch_num = (i // BATCH_SIZE) + 1
             batch = service.new_batch_http_request()
 
-            def batch_callback(request_id, response, exception, _senders=senders):
+            def batch_callback(request_id, response, exception,
+                               _senders=senders, _subjects=subjects_by_email):
                 if exception is None:
                     headers = response['payload']['headers']
                     from_header = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
                     match = re.search(r'<(.+?)>', from_header)
                     clean_email = match.group(1) if match else from_header
-                    _senders.append(clean_email.lower().strip())
+                    clean_email = clean_email.lower().strip()
+                    _senders.append(clean_email)
+
+                    subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '')
+                    if subject:
+                        bucket = _subjects.setdefault(clean_email, [])
+                        if len(bucket) < MAX_SUBJECTS:
+                            bucket.append(subject[:120])  # cap each subject length
 
             for msg in chunk:
                 batch.add(
                     service.users().messages().get(
                         userId='me', id=msg['id'],
-                        format='metadata', metadataHeaders=['From']
+                        format='metadata', metadataHeaders=['From', 'Subject']
                     ),
                     callback=batch_callback
                 )
@@ -152,7 +162,8 @@ def run_inbox_scan(job_id, credentials_dict):
         if senders:
             counts = Counter(senders)
             result_data = [
-                {'email': email, 'count': count}
+                {'email': email, 'count': count,
+                 'subjects': subjects_by_email.get(email, [])}
                 for email, count in sorted(counts.items(), key=lambda x: (-x[1], x[0]))
             ]
         else:

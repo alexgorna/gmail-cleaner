@@ -77,11 +77,57 @@
         .action-select:hover { border-color: #94a3b8; background-color: #f8fafc; }
 
         @media (max-width: 768px) {
-            .hero-title { font-size: 1.5rem; }
-            .controls-wrapper { flex-direction: column; gap: 15px; align-items: stretch !important; }
+            /* Hero */
+            .hero-section { padding: 28px 16px 55px; }
+            .hero-title { font-size: 1.25rem; }
+
+            /* Controls bar */
+            .controls-wrapper { flex-direction: column; gap: 10px; align-items: stretch !important; padding: 12px; }
+            #left-controls-area { margin-right: 0; width: 100%; }
             .search-input-group { max-width: 100%; }
-            .action-buttons { width: 100%; display: flex; justify-content: space-between; gap: 10px; overflow-x: auto; margin-left: 0 !important; margin-top: 10px; }
+
+            /* Action buttons: wrap on mobile, smaller sizes */
+            .action-buttons {
+                width: 100%;
+                display: flex !important;
+                flex-wrap: wrap;
+                justify-content: flex-end;
+                gap: 6px;
+                margin-left: 0 !important;
+            }
+            .action-buttons .btn { padding: 5px 10px !important; font-size: 0.78rem !important; }
+            #apply-btn { flex: 1; justify-content: center; }
+            #ai-bulk-controls { width: 100%; justify-content: flex-end; }
+
+            /* Dashboard container */
+            .dashboard-container { padding: 0 6px; margin-bottom: 30px; }
+
+            /* Table: reduce padding, smaller text */
+            .table-custom td { padding: 10px 8px; font-size: 0.85rem; }
+            .table-custom th { padding: 10px 8px; font-size: 0.7rem; }
+            .table-custom td:first-child { padding-left: 10px !important; }
+            .table-custom th:first-child { padding-left: 10px !important; }
+
+            /* Action select: narrower on mobile */
+            .action-select { max-width: 130px !important; font-size: 0.78rem !important; padding: 4px 20px 4px 8px !important; }
+
+            /* Count badge: compact */
+            .count-badge { padding: 4px 8px; font-size: 0.78rem; min-width: 30px; }
+
+            /* AI hints: tighter layout */
+            .ai-hint { flex-direction: row; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+            .ai-hint-text { font-size: 0.7rem; }
+            .btn-ai-apply, .btn-ai-dismiss { font-size: 0.68rem; padding: 1px 7px; }
+
+            /* Pagination */
+            #pagination-controls { padding: 8px 10px; gap: 8px; }
             .table-responsive { border: none; }
+        }
+
+        @media (max-width: 480px) {
+            /* Very small screens: hide Count column header (hidden via JS too) */
+            .hero-title { font-size: 1.1rem; }
+            .action-select { max-width: 110px !important; font-size: 0.75rem !important; }
         }
 
         .progress-custom { height: 10px; background-color: rgba(255,255,255,0.5); border-radius: 10px; overflow: hidden; max-width: 600px; margin: 20px auto 0; }
@@ -216,7 +262,7 @@
                         <tr>
                             <th style="width: 40px; padding-left: 24px;"><input class="form-check-input" type="checkbox" id="selectAll" onchange="toggleSelectAll()"></th>
                             <th>Sender Email</th>
-                            <th style="width: 120px;" class="text-center">Count</th>
+                            <th style="width: 120px;" class="text-center d-none d-sm-table-cell">Count</th>
                             <th style="width: 280px;" class="text-end pe-4">Action</th>
                         </tr>
                     </thead>
@@ -380,7 +426,7 @@
                     <input type="checkbox" class="form-check-input row-checkbox" onchange="updateSelection()" ${isDisabled ? 'disabled' : ''}>
                 </td>
                 <td class="email-text"></td> 
-                <td class="text-center"><span class="count-badge">${row.count}</span></td>
+                <td class="text-center d-none d-sm-table-cell"><span class="count-badge">${row.count}</span></td>
                 <td class="text-end pe-4">
                     <select class="form-select form-select-sm action-select d-inline-block" style="width: auto; max-width: 200px;" data-email="${row.email}" onchange="handleActionChange(this)">
                         <option value="none">Choose action...</option>
@@ -1078,9 +1124,35 @@
                     const nameParts = suggestion.label.split('/');
                     const leafName = nameParts[nameParts.length - 1];
                     const parentName = suggestion.parent || (nameParts.length > 1 ? nameParts[nameParts.length - 2] : null);
-                    const parentLabel = parentName
+                    let parentLabel = parentName
                         ? existingLabels.find(l => l.name.toLowerCase() === parentName.toLowerCase())
                         : null;
+
+                    // If a parent is needed but doesn't exist yet, create it first.
+                    // (Multiple children sharing the same parent only create it once because
+                    //  the first creation adds it to existingLabels for all subsequent lookups.)
+                    if (parentName && !parentLabel) {
+                        try {
+                            const parentRes = await fetch('/api/create_label', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+                                body: JSON.stringify({ name: parentName, parentId: null, parentName: null }),
+                            });
+                            const newParent = await parentRes.json();
+                            if (!newParent.error && newParent.id) {
+                                parentLabel = { id: newParent.id, name: newParent.name, type: 'user' };
+                                if (!existingLabels.find(l => l.id === newParent.id)) {
+                                    existingLabels.push(parentLabel);
+                                    existingLabels.sort((a, b) => a.name.localeCompare(b.name));
+                                    regenerateLabelOptions();
+                                }
+                                logToScanDebugger(`AI created parent label: ${newParent.name}`, 'success');
+                            } else {
+                                // 409 or other — label may already exist under a different case
+                                parentLabel = existingLabels.find(l => l.name.toLowerCase() === parentName.toLowerCase()) || null;
+                            }
+                        } catch(e) { /* parent creation failed — child will be top-level */ }
+                    }
 
                     const payload = {
                         name:       leafName,
@@ -1131,15 +1203,12 @@
     }
 
     function _selectLabelInRow(email, labelId, labelName) {
+        // Always record the pending action first — this survives any subsequent DOM rebuild.
+        pendingActions[email] = { action: 'label', labelId, labelName };
+        // Also update the visible dropdown if the row is currently rendered.
         const select = document.querySelector(`.action-select[data-email="${CSS.escape(email)}"]`);
         if (select) {
             select.value = `label:${labelId}`;
-            // If option not found yet (optgroup just rebuilt), handleActionChange manually
-            if (select.value !== `label:${labelId}`) {
-                pendingActions[email] = { action: 'label', labelId, labelName };
-            } else {
-                handleActionChange(select);
-            }
         }
     }
 
@@ -1156,6 +1225,9 @@
         for (const email of emails) {
             if (aiSuggestions[email]) await applyAISuggestion(email);
         }
+        // Re-render once at the end so all pending actions are visually reflected,
+        // regardless of whether individual selects were in the DOM during the loop.
+        renderTable();
     }
 
     function dismissAllAI() {

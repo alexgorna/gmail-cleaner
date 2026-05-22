@@ -83,7 +83,8 @@ def suggest_labels(senders: list, existing_labels: list) -> dict:
     Call the configured AI provider to group senders and suggest Gmail labels.
 
     Args:
-        senders:         list of sender email address strings
+        senders:         list of sender email address strings, OR list of dicts
+                         with keys 'email' (str) and 'subjects' (list[str])
         existing_labels: list of user label name strings (e.g. ["Finance", "Finance/Banks"])
 
     Returns:
@@ -139,11 +140,30 @@ def _clean_json(raw: str) -> str:
 
 
 def _call_provider(config: dict, api_key: str, senders: list, existing_labels: list) -> dict:
-    """Make one API call and return parsed JSON. Raises on HTTP or JSON error."""
+    """Make one API call and return parsed JSON. Raises on HTTP or JSON error.
+
+    senders may be a list of plain email strings, or a list of dicts with
+    keys 'email' (str) and 'subjects' (list[str]).  Subject lines are included
+    in the prompt when available so the model can make better grouping decisions.
+    """
+    # Build one line per sender; include up to 3 subjects when present.
+    sender_lines = []
+    for s in senders:
+        if isinstance(s, dict):
+            email    = s.get('email', '')
+            subjects = s.get('subjects') or []
+            if subjects:
+                quoted = ', '.join(f'"{subj}"' for subj in subjects[:3])
+                sender_lines.append(f"{email} | subjects: {quoted}")
+            else:
+                sender_lines.append(email)
+        else:
+            sender_lines.append(s)
+
     label_block = '\n'.join(existing_labels) if existing_labels else '(none)'
     user_message = (
-        f"SENDER LIST ({len(senders)} addresses):\n"
-        + '\n'.join(senders)
+        f"SENDER LIST ({len(senders)} senders):\n"
+        + '\n'.join(sender_lines)
         + f"\n\nEXISTING LABELS ({len(existing_labels)}):\n"
         + label_block
         + "\n\nGroup these senders and return Gmail label suggestions as JSON."

@@ -270,8 +270,28 @@ Railway runs both `web` and `worker` processes from the same deploy. On other pl
 
 ---
 
+### 17. Feature — `no_label` AI Hint + Enlarged Mobile Touch Targets
+**Commit:** `4b4a1f0` — deployed ✓
+
+**What it does (two changes in one commit):**
+
+**A. no_label UI:**
+- When the AI identifies a sender as ad-hoc, infrequent, or non-transactional (e.g. a personal Gmail contact), the AI hint now shows: *"Applying a label not recommended."* in amber text with only the ✕ dismiss button — no "Apply AI" button, since there's no label to apply.
+- For `use_existing` and `create_new` suggestions the hint is unchanged.
+- The `no_label` action is stored in `aiSuggestions` and the hint rendering branches on `suggestion.action === 'no_label'`.
+
+**B. Mobile CSS — fat-thumb touch targets:**
+- All interactive controls raised to `min-height: 44px` (action buttons, AI bulk buttons, action select, pagination buttons).
+- Font sizes raised to `0.875rem` for buttons and selects (from 0.68–0.78rem).
+- AI hint apply/dismiss buttons raised to `min-height: 36px` with comfortable padding.
+- Padding on `.action-select` increased to `8px 24px 8px 10px`.
+
+**Files changed:** `templates/dashboard.html`
+
+---
+
 ## Pending / Next Steps
-- End-to-end test of AI suggestions on the live app (first time running through the full async flow)
+- End-to-end test of AI suggestions on the live app
 - Consider pinning versions in `requirements.txt` to prevent future silent regressions from library upgrades
 - Google OAuth app verification (required before commercializing — sensitive scopes need Google review)
 - Continue working through the feature backlog

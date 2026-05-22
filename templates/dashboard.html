@@ -86,48 +86,51 @@
             #left-controls-area { margin-right: 0; width: 100%; }
             .search-input-group { max-width: 100%; }
 
-            /* Action buttons: wrap on mobile, smaller sizes */
+            /* Action buttons: wrap on mobile, finger-friendly touch targets */
             .action-buttons {
                 width: 100%;
                 display: flex !important;
                 flex-wrap: wrap;
                 justify-content: flex-end;
-                gap: 6px;
+                gap: 8px;
                 margin-left: 0 !important;
             }
-            .action-buttons .btn { padding: 5px 10px !important; font-size: 0.78rem !important; }
+            .action-buttons .btn { padding: 10px 16px !important; font-size: 0.875rem !important; min-height: 44px; }
             #apply-btn { flex: 1; justify-content: center; }
-            #ai-bulk-controls { width: 100%; justify-content: flex-end; }
+            #ai-bulk-controls { width: 100%; justify-content: flex-end; gap: 8px; }
+            #ai-bulk-controls .btn { min-height: 44px; padding: 10px 16px !important; font-size: 0.875rem !important; }
 
             /* Dashboard container */
             .dashboard-container { padding: 0 6px; margin-bottom: 30px; }
 
-            /* Table: reduce padding, smaller text */
-            .table-custom td { padding: 10px 8px; font-size: 0.85rem; }
-            .table-custom th { padding: 10px 8px; font-size: 0.7rem; }
+            /* Table: reduce padding, readable text */
+            .table-custom td { padding: 12px 8px; font-size: 0.875rem; }
+            .table-custom th { padding: 12px 8px; font-size: 0.75rem; }
             .table-custom td:first-child { padding-left: 10px !important; }
             .table-custom th:first-child { padding-left: 10px !important; }
 
-            /* Action select: narrower on mobile */
-            .action-select { max-width: 130px !important; font-size: 0.78rem !important; padding: 4px 20px 4px 8px !important; }
+            /* Action select: narrower but tall enough to tap */
+            .action-select { max-width: 150px !important; font-size: 0.875rem !important; padding: 8px 24px 8px 10px !important; min-height: 44px; }
 
-            /* Count badge: compact */
-            .count-badge { padding: 4px 8px; font-size: 0.78rem; min-width: 30px; }
+            /* Count badge: compact but readable */
+            .count-badge { padding: 6px 10px; font-size: 0.8rem; min-width: 32px; }
 
-            /* AI hints: tighter layout */
-            .ai-hint { flex-direction: row; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-            .ai-hint-text { font-size: 0.7rem; }
-            .btn-ai-apply, .btn-ai-dismiss { font-size: 0.68rem; padding: 1px 7px; }
+            /* AI hints: finger-friendly buttons */
+            .ai-hint { flex-direction: row; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+            .ai-hint-text { font-size: 0.8rem; }
+            .btn-ai-apply { font-size: 0.8rem; padding: 6px 14px; min-height: 36px; }
+            .btn-ai-dismiss { font-size: 0.85rem; padding: 6px 10px; min-height: 36px; }
 
             /* Pagination */
-            #pagination-controls { padding: 8px 10px; gap: 8px; }
+            #pagination-controls { padding: 10px; gap: 10px; }
+            #pagination-controls .btn { min-height: 44px; padding: 8px 14px; }
             .table-responsive { border: none; }
         }
 
         @media (max-width: 480px) {
-            /* Very small screens: hide Count column header (hidden via JS too) */
+            /* Very small screens */
             .hero-title { font-size: 1.1rem; }
-            .action-select { max-width: 110px !important; font-size: 0.75rem !important; }
+            .action-select { max-width: 130px !important; font-size: 0.875rem !important; }
         }
 
         .progress-custom { height: 10px; background-color: rgba(255,255,255,0.5); border-radius: 10px; overflow: hidden; max-width: 600px; margin: 20px auto 0; }
@@ -463,21 +466,28 @@
 
                 const hintText = document.createElement('span');
                 hintText.className = 'ai-hint-text';
-                const verb = suggestion.action === 'use_existing' ? 'Existing label' : 'Creating label';
-                hintText.innerHTML = `${verb} <strong>${escapeHtml(suggestion.label)}</strong> recommended.`;
-
-                const applyBtn = document.createElement('button');
-                applyBtn.className = 'btn-ai-apply';
-                applyBtn.textContent = 'Apply AI';
-                applyBtn.onclick = () => applyAISuggestion(row.email);
 
                 const dismissBtn = document.createElement('button');
                 dismissBtn.className = 'btn-ai-dismiss';
                 dismissBtn.textContent = '✕';
                 dismissBtn.onclick = () => dismissAISuggestion(row.email);
 
-                hintDiv.appendChild(hintText);
-                hintDiv.appendChild(applyBtn);
+                if (suggestion.action === 'no_label') {
+                    hintText.innerHTML = `<span style="color:#92400e;">Applying a label not recommended.</span>`;
+                    hintDiv.appendChild(hintText);
+                } else {
+                    const verb = suggestion.action === 'use_existing' ? 'Existing label' : 'Creating label';
+                    hintText.innerHTML = `${verb} <strong>${escapeHtml(suggestion.label)}</strong> recommended.`;
+
+                    const applyBtn = document.createElement('button');
+                    applyBtn.className = 'btn-ai-apply';
+                    applyBtn.textContent = 'Apply AI';
+                    applyBtn.onclick = () => applyAISuggestion(row.email);
+
+                    hintDiv.appendChild(hintText);
+                    hintDiv.appendChild(applyBtn);
+                }
+
                 hintDiv.appendChild(dismissBtn);
                 emailCell.appendChild(hintDiv);
             }

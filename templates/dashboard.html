@@ -72,6 +72,8 @@
         .row-processed { opacity: 0.5; background-color: #f8f9fa; pointer-events: none; }
         .row-processed .email-text { text-decoration: line-through; color: #999; }
         .row-processed .action-select { background-color: #e9ecef; border-color: #dee2e6; color: #6c757d; }
+
+        .row-ai-applied { background-color: #eff6ff; border-left: 3px solid #3b82f6; }
         
         .action-select { border-radius: 20px; border: 1px solid #cbd5e1; background-color: #fff; font-size: 0.9rem; padding: 6px 30px 6px 12px; cursor: pointer; transition: all 0.2s; }
         .action-select:hover { border-color: #94a3b8; background-color: #f8fafc; }
@@ -356,7 +358,8 @@
     let isBulkCreate = false;
     let currentInboxCount = 0;
     let sessionOrganizedCount = 0;
-    let aiSuggestions = {};  // { email: { action, label, labelId, parent, groupName } }
+    let aiSuggestions = {};   // { email: { action, label, labelId, parent, groupName } }
+    let aiAppliedRows = new Set();  // emails where AI suggestion has been applied this session
 
     window.onload = async function() {
         fetchUserInfo();
@@ -422,7 +425,8 @@
                 else if (pending.action === 'label') selectedValue = `label:${pending.labelId}`;
             }
 
-            if(rowClass) tr.className = rowClass;
+            if (rowClass) tr.className = rowClass;
+            else if (aiAppliedRows.has(row.email)) tr.className = 'row-ai-applied';
 
             tr.innerHTML = `
                 <td style="padding-left: 24px;">
@@ -727,6 +731,7 @@
                 const totalEmails = allData.reduce((sum, item) => sum + item.count, 0);
                 currentInboxCount = totalEmails;
                 sessionOrganizedCount = 0;
+                aiAppliedRows = new Set();
                 document.getElementById('hero-status-content').innerHTML = `
                     <h1 class="hero-title" style="margin-top: 10px;">You have <span class="hero-count" id="inbox-count-display">${totalEmails.toLocaleString()} emails</span> in your inbox.</h1>
                     <p id="organized-summary" style="display:none; margin-top:10px; font-size:1rem; color:#475569; margin-bottom:0;">You successfully organized <span id="organized-count-display" style="color:#1DB954; font-weight:700;"></span>.</p>
@@ -1205,10 +1210,16 @@
             }
         }
 
-        // Dismiss hint for this row
+        // Mark row as AI-applied and dismiss hint
+        aiAppliedRows.add(email);
         delete aiSuggestions[email];
         const hintEl = document.querySelector(`.ai-hint[data-ai-email="${email}"]`);
         if (hintEl) hintEl.remove();
+        // Highlight the row immediately without a full re-render
+        const rowEl = document.querySelector(`tr:has(.action-select[data-email="${CSS.escape(email)}"])`);
+        if (rowEl && !rowEl.classList.contains('row-processed')) {
+            rowEl.className = 'row-ai-applied';
+        }
         updateAIBulkButtons();
     }
 

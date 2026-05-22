@@ -110,6 +110,18 @@
         .processing-dot { animation: blink-dot 1.4s infinite ease-in-out; display: inline-block; }
         .processing-dot:nth-child(2) { animation-delay: 0.2s; }
         .processing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+        /* AI suggestion hints (inline, below each sender address) */
+        .ai-hint { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 5px; animation: fadeIn 0.25s ease; }
+        .ai-hint-text { font-size: 0.75rem; color: #64748b; }
+        .ai-hint-text strong { color: #1e40af; font-weight: 600; }
+        .btn-ai-apply { font-size: 0.72rem; padding: 1px 9px; border-radius: 12px; background: #eff6ff; border: 1px solid #bfdbfe; color: #1d4ed8; font-weight: 500; line-height: 1.6; cursor: pointer; }
+        .btn-ai-apply:hover { background: #dbeafe; border-color: #93c5fd; }
+        .btn-ai-dismiss { font-size: 0.72rem; padding: 1px 7px; border-radius: 12px; background: #f8fafc; border: 1px solid #e2e8f0; color: #94a3b8; line-height: 1.6; cursor: pointer; }
+        .btn-ai-dismiss:hover { background: #f1f5f9; color: #64748b; }
+
+        /* AI bulk buttons (shown in action-buttons area when suggestions are loaded) */
+        .btn-ai-bulk { border-radius: 20px; padding: 6px 14px; font-size: 0.9rem; font-weight: 500; }
     </style>
 </head>
 <body>
@@ -174,11 +186,23 @@
                 </div>
                 
                 <div class="action-buttons d-flex align-items-center">
+                    <!-- AI bulk controls — shown once suggestions are loaded -->
+                    <div id="ai-bulk-controls" class="d-none d-flex align-items-center gap-2 me-2">
+                        <button class="btn btn-outline-secondary btn-ai-bulk" onclick="dismissAllAI()">
+                            Dismiss AI
+                        </button>
+                        <button class="btn btn-outline-primary btn-ai-bulk fw-bold" onclick="applyAllAI()">
+                            Apply AI
+                        </button>
+                    </div>
                     <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small me-2" onclick="window.location.reload()">
                         <i class="bi bi-arrow-clockwise"></i>
                     </button>
                     <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small me-2" onclick="downloadCSV()">
                         <i class="bi bi-download"></i> CSV
+                    </button>
+                    <button id="ai-suggest-btn" class="btn btn-light text-secondary border rounded-pill px-3 py-2 small me-2" onclick="requestAISuggestions()">
+                        <i class="bi bi-stars me-1"></i> AI
                     </button>
                     <button id="apply-btn" class="btn btn-primary rounded-pill px-4 py-2 small fw-bold" onclick="applyChanges()">
                         Apply Actions
@@ -283,6 +307,7 @@
     let isBulkCreate = false;
     let currentInboxCount = 0;
     let sessionOrganizedCount = 0;
+    let aiSuggestions = {};  // { email: { action, label, labelId, parent, groupName } }
 
     window.onload = async function() {
         fetchUserInfo();
@@ -369,7 +394,10 @@
             `;
             
             const emailCell = tr.querySelector('.email-text');
-            emailCell.appendChild(document.createTextNode(row.email));
+
+            // Line 1: email address + Gmail link
+            const emailLine = document.createElement('span');
+            emailLine.appendChild(document.createTextNode(row.email));
             const gmailLink = document.createElement('a');
             gmailLink.href = `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(row.email)}`;
             gmailLink.target = '_blank';
@@ -377,7 +405,37 @@
             gmailLink.title = 'View in Gmail';
             gmailLink.className = 'gmail-search-link';
             gmailLink.innerHTML = `<i class="bi bi-box-arrow-up-right"></i>`;
-            emailCell.appendChild(gmailLink);
+            emailLine.appendChild(gmailLink);
+            emailCell.appendChild(emailLine);
+
+            // Line 2: AI suggestion hint (only if suggestion exists and row not processed)
+            const suggestion = !row.processedAction && aiSuggestions[row.email];
+            if (suggestion) {
+                const hintDiv = document.createElement('div');
+                hintDiv.className = 'ai-hint';
+                hintDiv.setAttribute('data-ai-email', row.email);
+
+                const hintText = document.createElement('span');
+                hintText.className = 'ai-hint-text';
+                const verb = suggestion.action === 'use_existing' ? 'Existing label' : 'Creating label';
+                hintText.innerHTML = `${verb} <strong>${escapeHtml(suggestion.label)}</strong> recommended.`;
+
+                const applyBtn = document.createElement('button');
+                applyBtn.className = 'btn-ai-apply';
+                applyBtn.textContent = 'Apply AI';
+                applyBtn.onclick = () => applyAISuggestion(row.email);
+
+                const dismissBtn = document.createElement('button');
+                dismissBtn.className = 'btn-ai-dismiss';
+                dismissBtn.textContent = '✕';
+                dismissBtn.onclick = () => dismissAISuggestion(row.email);
+
+                hintDiv.appendChild(hintText);
+                hintDiv.appendChild(applyBtn);
+                hintDiv.appendChild(dismissBtn);
+                emailCell.appendChild(hintDiv);
+            }
+
             const select = tr.querySelector('select');
             select.value = selectedValue;
             tbody.appendChild(tr);
@@ -848,6 +906,207 @@
             btn.disabled = false;
             btn.innerText = "Apply Actions";
         }
+    }
+
+    // ── AI Label Suggestions ──────────────────────────────────────────────────
+
+    function escapeHtml(str) {
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    async function requestAISuggestions() {
+        const btn = document.getElementById('ai-suggest-btn');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Thinking...';
+
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        try {
+            const res = await fetch('/api/suggest_labels', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': csrfToken }
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || `HTTP ${res.status}`);
+            }
+            const data = await res.json();
+            processAISuggestions(data);
+            btn.innerHTML = '<i class="bi bi-stars me-1"></i> AI';
+            btn.disabled = false;
+        } catch (err) {
+            logToScanDebugger('AI unavailable: ' + err.message, 'error');
+            btn.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i> AI Unavailable';
+            setTimeout(() => {
+                btn.innerHTML = '<i class="bi bi-stars me-1"></i> AI';
+                btn.disabled = false;
+            }, 4000);
+        }
+    }
+
+    function processAISuggestions(data) {
+        aiSuggestions = {};
+        if (!data || !Array.isArray(data.suggestions)) return;
+
+        data.suggestions.forEach(group => {
+            if (!Array.isArray(group.senders)) return;
+
+            let resolvedAction = group.action;
+            let resolvedLabelId = null;
+
+            if (group.action === 'use_existing') {
+                const match = existingLabels.find(
+                    l => l.type === 'user' && l.name.toLowerCase() === group.label.toLowerCase()
+                );
+                if (match) {
+                    resolvedLabelId = match.id;
+                } else {
+                    // AI said use_existing but label not found — treat as create_new
+                    resolvedAction = 'create_new';
+                }
+            }
+
+            group.senders.forEach(email => {
+                aiSuggestions[email] = {
+                    groupName:  group.group_name || '',
+                    action:     resolvedAction,
+                    label:      group.label,
+                    labelId:    resolvedLabelId,
+                    parent:     group.parent || null,
+                };
+            });
+        });
+
+        logToScanDebugger(`AI suggested labels for ${Object.keys(aiSuggestions).length} senders.`, 'success');
+        renderTable();
+        updateAIBulkButtons();
+    }
+
+    function updateAIBulkButtons() {
+        const hasAny = Object.keys(aiSuggestions).length > 0;
+        const bulkEl = document.getElementById('ai-bulk-controls');
+        if (hasAny) {
+            bulkEl.classList.remove('d-none');
+            bulkEl.classList.add('d-flex');
+        } else {
+            bulkEl.classList.add('d-none');
+            bulkEl.classList.remove('d-flex');
+        }
+    }
+
+    async function applyAISuggestion(email) {
+        const suggestion = aiSuggestions[email];
+        if (!suggestion) return;
+
+        if (suggestion.action === 'use_existing' && suggestion.labelId) {
+            // Already exists — just select it in the dropdown
+            _selectLabelInRow(email, suggestion.labelId,
+                existingLabels.find(l => l.id === suggestion.labelId)?.name || suggestion.label);
+
+        } else {
+            // create_new — check if we already created it in a prior applyAISuggestion call
+            const alreadyExists = existingLabels.find(
+                l => l.type === 'user' && l.name.toLowerCase() === suggestion.label.toLowerCase()
+            );
+            if (alreadyExists) {
+                _selectLabelInRow(email, alreadyExists.id, alreadyExists.name);
+            } else {
+                // Create the label via API
+                try {
+                    const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+                    const nameParts = suggestion.label.split('/');
+                    const leafName = nameParts[nameParts.length - 1];
+                    const parentName = suggestion.parent || (nameParts.length > 1 ? nameParts[nameParts.length - 2] : null);
+                    const parentLabel = parentName
+                        ? existingLabels.find(l => l.name.toLowerCase() === parentName.toLowerCase())
+                        : null;
+
+                    const payload = {
+                        name:       leafName,
+                        parentId:   parentLabel ? parentLabel.id   : null,
+                        parentName: parentLabel ? parentLabel.name : null,
+                    };
+                    const res = await fetch('/api/create_label', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+                        body: JSON.stringify(payload),
+                    });
+                    const newLabel = await res.json();
+                    if (newLabel.error) throw new Error(newLabel.error);
+
+                    // Register new label in existingLabels
+                    if (!existingLabels.find(l => l.id === newLabel.id)) {
+                        existingLabels.push({ id: newLabel.id, name: newLabel.name, type: 'user' });
+                        existingLabels.sort((a, b) => a.name.localeCompare(b.name));
+                    }
+                    regenerateLabelOptions();
+
+                    // Rebuild all dropdown optgroups & restore pending selections
+                    document.querySelectorAll('.action-select optgroup').forEach(grp => {
+                        grp.innerHTML = `<option value="new_label">+ Create New Label</option>` + labelOptionsHTML;
+                    });
+                    document.querySelectorAll('.action-select').forEach(sel => {
+                        const em = sel.dataset.email;
+                        if (pendingActions[em]) {
+                            const p = pendingActions[em];
+                            sel.value = p.action === 'delete' ? 'delete' : `label:${p.labelId}`;
+                        }
+                    });
+                    populateBulkDropdown();
+
+                    _selectLabelInRow(email, newLabel.id, newLabel.name);
+                    logToScanDebugger(`AI created label: ${newLabel.name}`, 'success');
+                } catch (err) {
+                    logToScanDebugger(`AI label creation failed for ${email}: ${err.message}`, 'error');
+                }
+            }
+        }
+
+        // Dismiss hint for this row
+        delete aiSuggestions[email];
+        const hintEl = document.querySelector(`.ai-hint[data-ai-email="${email}"]`);
+        if (hintEl) hintEl.remove();
+        updateAIBulkButtons();
+    }
+
+    function _selectLabelInRow(email, labelId, labelName) {
+        const select = document.querySelector(`.action-select[data-email="${CSS.escape(email)}"]`);
+        if (select) {
+            select.value = `label:${labelId}`;
+            // If option not found yet (optgroup just rebuilt), handleActionChange manually
+            if (select.value !== `label:${labelId}`) {
+                pendingActions[email] = { action: 'label', labelId, labelName };
+            } else {
+                handleActionChange(select);
+            }
+        }
+    }
+
+    function dismissAISuggestion(email) {
+        delete aiSuggestions[email];
+        const hintEl = document.querySelector(`.ai-hint[data-ai-email="${email}"]`);
+        if (hintEl) hintEl.remove();
+        updateAIBulkButtons();
+    }
+
+    async function applyAllAI() {
+        // Snapshot keys so the loop isn't affected by deletions inside applyAISuggestion
+        const emails = Object.keys(aiSuggestions);
+        for (const email of emails) {
+            if (aiSuggestions[email]) await applyAISuggestion(email);
+        }
+    }
+
+    function dismissAllAI() {
+        Object.keys(aiSuggestions).forEach(email => {
+            const hintEl = document.querySelector(`.ai-hint[data-ai-email="${email}"]`);
+            if (hintEl) hintEl.remove();
+        });
+        aiSuggestions = {};
+        updateAIBulkButtons();
     }
 </script>
 </body>

@@ -9,4 +9,5 @@ google-auth-oauthlib
 gunicorn
 httplib2
 redis
+requests
 werkzeug

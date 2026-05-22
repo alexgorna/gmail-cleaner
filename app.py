@@ -16,6 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from tasks import run_inbox_scan
+import ai_labeler
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -224,6 +225,48 @@ def scan_results(job_id):
     if not results_raw:
         return jsonify({'error': 'Results not found'}), 404
     return jsonify(json.loads(results_raw))
+
+
+# --- AI LABEL SUGGESTIONS ---
+@app.route('/api/suggest_labels', methods=['POST'])
+def suggest_labels():
+    if not ai_labeler.AI_LABELING_ENABLED:
+        return jsonify({'error': 'AI labeling is disabled'}), 503
+
+    if not get_creds():
+        return jsonify({'error': 'Not logged in'}), 401
+
+    job_id = session.get('scan_job_id')
+    if not job_id:
+        return jsonify({'error': 'No scan results available — run a scan first.'}), 400
+
+    r = get_redis_client()
+    results_raw = r.get(f'scan:{job_id}:results')
+    if not results_raw:
+        return jsonify({'error': 'Scan results expired — please scan again.'}), 400
+
+    scan_data = json.loads(results_raw)
+    senders = [item['email'] for item in scan_data]
+
+    # Fetch the user's current label list from Gmail
+    label_names = []
+    try:
+        service = get_service()
+        if service:
+            label_results = service.users().labels().list(userId='me').execute()
+            label_names = [
+                l['name'] for l in label_results.get('labels', [])
+                if l.get('type') == 'user'
+            ]
+    except Exception as e:
+        print(f"Label fetch for AI failed: {e}")
+
+    try:
+        result = ai_labeler.suggest_labels(senders, label_names)
+        return jsonify(result)
+    except Exception as e:
+        print(f"AI suggestion error: {e}")
+        return jsonify({'error': str(e)}), 503
 
 
 # --- APPLY ACTIONS ---

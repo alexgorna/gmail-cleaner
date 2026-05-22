@@ -270,7 +270,55 @@ Railway runs both `web` and `worker` processes from the same deploy. On other pl
 
 ---
 
-### 17. Feature — `no_label` AI Hint + Enlarged Mobile Touch Targets
+### 17. Feature — Parent Label Auto-Creation, Email Subjects in AI Prompt, Mobile UI, Bulk-Apply Bug Fix
+**Commit:** `9184375` — deployed ✓
+
+**Four improvements shipped together:**
+
+**A. Parent label auto-creation:**
+- Previously, if the AI suggested a nested label like `Finance/Stripe` and the `Finance` parent didn't yet exist, the child label creation would fail silently.
+- `applyAISuggestion()` now checks for the parent first. If not found in `existingLabels`, it calls `POST /api/create_label` to create it, pushes the result into `existingLabels`, and calls `regenerateLabelOptions()` so the dropdown reflects the new parent before creating the child.
+- Multiple children sharing the same new parent only trigger one parent creation (the second call lands on an already-created label and gracefully falls back to a lookup by name).
+
+**B. Email subjects in AI prompt:**
+- The inbox scan now collects up to 3 `Subject` headers per sender (capped at 120 chars each) during Phase 2 batch fetching, stored in `subjects_by_email`.
+- Results JSON includes `"subjects": [...]` per sender entry.
+- `POST /api/suggest_labels` enriches each sender with its subjects before passing to the AI worker.
+- `ai_labeler._call_provider()` formats subjects as `email | subjects: "Sub1", "Sub2"` in the prompt, giving the model better context for grouping and `no_label` decisions.
+- `metadataHeaders` in the batch request expanded to `['From', 'Subject']`.
+
+**C. Initial mobile UI overhaul:**
+- Controls bar stacks vertically on screens ≤768px; action buttons wrap and stretch full-width.
+- Count column hidden on mobile via `d-none d-sm-table-cell` on `<th>` / `<td>`.
+- Action select narrowed; table padding and font sizes reduced for small screens.
+- (Later enlarged in item 19 after user feedback about touch target size.)
+
+**D. Bulk-apply bug fix:**
+- **Bug:** Running AI, filtering rows with the search box, then clicking "Apply AI (All)" — suggestions disappeared and nothing was applied.
+- **Root cause 1:** `_selectLabelInRow()` only set `pendingActions` as a fallback if the `<select>` DOM element wasn't found. With a search filter active, filtered-out rows have no DOM element, so `pendingActions` was never written for them.
+- **Root cause 2:** `applyAllAI()` didn't call `renderTable()` after the loop, so the table didn't reflect the newly-applied actions.
+- **Fix:** `_selectLabelInRow()` now unconditionally writes `pendingActions[email]` first, then optionally sets the select's value if the element exists. `applyAllAI()` calls `renderTable()` after the loop.
+
+**Files changed:** `app.py`, `tasks.py`, `templates/dashboard.html`
+
+---
+
+### 18. Fix — Limit AI to Displayed Rows; Remove Provider Name from Logs
+**Commit:** `9250b22` — deployed ✓
+
+**Problems:**
+1. With a full scan, 773 senders were sent to the AI → `finish_reason=length` (response truncated at 52,951 chars), causing a parse error.
+2. System log said "sending X senders to DeepSeek..." — baking in the provider name even though the stack is designed to be provider-agnostic.
+
+**Fixes:**
+- `requestAISuggestions()` now slices `filteredData` to the currently displayed page (`filteredData.slice(start, end).map(r => r.email)`) and sends only those senders to the AI. Typically 50 rows per page — well within token limits.
+- Log message changed to `"AI: sending X senders (background job)..."` with no provider name.
+
+**Files changed:** `templates/dashboard.html`
+
+---
+
+### 19. Feature — `no_label` AI Hint + Enlarged Mobile Touch Targets
 **Commit:** `4b4a1f0` — deployed ✓
 
 **What it does (two changes in one commit):**

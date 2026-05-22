@@ -1,9 +1,9 @@
 # Session Notes — May 21, 2026
 
 ## Project Overview
-Gmail Cleaner is a Flask web app that connects via Google OAuth and helps bulk-organize a Gmail inbox by sender. It scans the inbox in real time (Server-Sent Events), shows a ranked table of senders by email count, and lets the user bulk-delete or label emails from each sender.
+Gmail Cleaner is a Flask web app that connects via Google OAuth and helps bulk-organize a Gmail inbox by sender. It scans the inbox as a background job (Celery + Redis), shows a ranked table of senders by email count, and lets the user bulk-delete or label emails from each sender.
 
-Stack: Python/Flask, Gmail API, Bootstrap 5, Vanilla JS, Redis sessions, deployed on Railway via Gunicorn.
+Stack: Python/Flask, Celery, Gmail API, Bootstrap 5, Vanilla JS, Redis (sessions + job state), deployed on Railway via Gunicorn (web) + Celery worker.
 
 ---
 
@@ -167,7 +167,7 @@ Stack: Python/Flask, Gmail API, Bootstrap 5, Vanilla JS, Redis sessions, deploye
 ---
 
 ### 12. Feature — "Processing..." Blinking State During Apply Actions
-**Commit:** pending deployment
+**Commit:** deployed ✓
 
 **What it does:**
 - As soon as Apply Actions is clicked, the "You successfully organized X emails" line (whether previously visible or not) switches to "Processing..." with three blinking animated dots
@@ -180,7 +180,7 @@ Stack: Python/Flask, Gmail API, Bootstrap 5, Vanilla JS, Redis sessions, deploye
 ---
 
 ### 13. Architecture — Background Job Refactor (Celery + Redis)
-**Commit:** pending deployment
+**Commit:** `00916a4` — deployed ✓ (Railway: web + worker + Redis all Online)
 
 **Motivation:** The SSE-based scan held an HTTP connection open for the full duration of Phase 2 (up to 3–4 minutes for large inboxes). This caused Railway proxy timeouts, required a 600s Gunicorn timeout, and made concurrent users impossible since each scan occupied a long-running thread. With commercialization in mind, this was the highest-leverage architectural change to make first.
 
@@ -214,7 +214,64 @@ Railway runs both `web` and `worker` processes from the same deploy. On other pl
 
 ---
 
+### 14. Feature — AI Label Suggestions (DeepSeek)
+**Commit:** `ea19fb1` — deployed ✓
+
+**What it does:**
+- After a scan, a **✦ AI** button appears in the toolbar
+- Clicking it sends the sender list + user's existing label list to DeepSeek, which groups senders by company/org and recommends a Gmail label for each group (following the user's existing label structure)
+- Per-row: a small inline hint appears below each sender address — "Existing label **Finance** recommended." or "Creating label **Stripe** recommended." — with an **Apply AI** and **✕** button
+- Bulk: **Apply AI** / **Dismiss AI** buttons appear in the toolbar once suggestions are loaded
+- Applying a suggestion pre-fills the dropdown (use_existing selects the label; create_new silently creates it via API first, then selects it) — no emails are moved until the user clicks Apply Actions
+
+**Architecture (pluggable, flag-guarded):**
+- `ai_labeler.py` — self-contained adapter; swap provider by adding to `PROVIDER_CONFIGS` and setting `AI_PROVIDER` env var; disable entirely with `AI_LABELING_ENABLED=false`
+- Default provider: `deepseek` (`deepseek-v4-flash`, cheapest model), OpenAI-compatible API
+- Structured JSON output enforced via `response_format: {type: 'json_object'}` + schema in system prompt
+- New endpoint: `POST /api/suggest_labels` — reads senders from Redis scan results, fetches labels from Gmail API, calls `ai_labeler.suggest_labels()`
+
+**New files:** `ai_labeler.py`
+**Files changed:** `app.py`, `templates/dashboard.html`, `requirements.txt` (added `requests`)
+**Railway env var added:** `DEEPSEEK_API_KEY`
+
+---
+
+### 15. Fix — JSON Parse Errors from DeepSeek
+**Commits:** `937e750`, `e603613` — deployed ✓
+
+**Problems seen:**
+1. `Expecting ',' delimiter: line 816 column 49` — malformed JSON mid-response (unescaped character)
+2. `Expecting value: line 1 column 1 (char 0)` — DeepSeek returned empty content string (known flakiness in JSON mode)
+
+**Fixes in `ai_labeler.py`:**
+- `_clean_json()` — strips markdown fences, extracts outermost `{...}` block before parsing
+- Auto-retry with half senders on `JSONDecodeError` or `ValueError`
+- Increased `max_tokens` 8000 → 16000; default `AI_MAX_SENDERS` 1000 → 500
+- Empty content treated as `ValueError` (triggers retry); `reasoning_content` checked as fallback
+- Rich logging: `finish_reason`, token counts in system logs
+
+---
+
+### 16. Fix — AI Call Timeout (232s Railway Proxy Limit)
+**Commit:** `dce42f1` — deployed ✓
+
+**Problem:** DeepSeek API call blocked the Flask worker thread for ~232 seconds, hitting Railway's reverse-proxy timeout and dropping the connection.
+
+**Fix:** Moved the AI call to a Celery background task (same pattern as the inbox scan).
+
+**Architecture changes:**
+- `POST /api/suggest_labels` now queues a Celery job and returns `{job_id}` instantly (milliseconds)
+- New `GET /api/ai_status/<job_id>` — returns `{status, message}` from Redis; worker writes `running`/`complete`/`failed`
+- New `GET /api/ai_results/<job_id>` — returns full suggestions JSON once complete
+- `tasks.py`: added `run_ai_suggestions` Celery task + `_set_ai_status` helper; Redis keys `ai:{job_id}:status` and `ai:{job_id}:result` (1-hour TTL)
+- `dashboard.html`: `requestAISuggestions()` rewritten — POST → receive `job_id` → poll `/api/ai_status` every 2s → on complete fetch `/api/ai_results` → call `processAISuggestions()`
+
+**Files changed:** `app.py`, `tasks.py`, `templates/dashboard.html`
+
+---
+
 ## Pending / Next Steps
+- End-to-end test of AI suggestions on the live app (first time running through the full async flow)
 - Consider pinning versions in `requirements.txt` to prevent future silent regressions from library upgrades
 - Google OAuth app verification (required before commercializing — sensitive scopes need Google review)
 - Continue working through the feature backlog

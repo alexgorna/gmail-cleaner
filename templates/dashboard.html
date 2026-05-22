@@ -923,22 +923,45 @@
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Thinking...';
 
+        const senderCount = allData.length;
+        logToScanDebugger(`AI: sending ${senderCount} senders to DeepSeek...`, 'info');
+        const t0 = Date.now();
+
         const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
         try {
             const res = await fetch('/api/suggest_labels', {
                 method: 'POST',
                 headers: { 'X-CSRFToken': csrfToken }
             });
+            const data = await res.json().catch(() => ({}));
+            const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+
             if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err.error || `HTTP ${res.status}`);
+                const meta = data._meta || {};
+                logToScanDebugger(
+                    `AI error after ${elapsed}s — ${data.error || `HTTP ${res.status}`}` +
+                    (meta.senders_sent ? ` (sent ${meta.senders_sent} senders)` : ''),
+                    'error'
+                );
+                throw new Error(data.error || `HTTP ${res.status}`);
             }
-            const data = await res.json();
+
+            const meta = data._meta || {};
+            logToScanDebugger(
+                `AI: ${elapsed}s — ${meta.senders_sent ?? '?'} senders → ${meta.groups ?? '?'} groups` +
+                (meta.labels_sent ? ` (${meta.labels_sent} existing labels shared)` : ''),
+                'success'
+            );
+
             processAISuggestions(data);
             btn.innerHTML = '<i class="bi bi-stars me-1"></i> AI';
             btn.disabled = false;
         } catch (err) {
-            logToScanDebugger('AI unavailable: ' + err.message, 'error');
+            const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+            // Only log if not already logged above
+            if (!err.message.includes('HTTP') && !err.message.includes('senders')) {
+                logToScanDebugger(`AI failed after ${elapsed}s: ${err.message}`, 'error');
+            }
             btn.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i> AI Unavailable';
             setTimeout(() => {
                 btn.innerHTML = '<i class="bi bi-stars me-1"></i> AI';

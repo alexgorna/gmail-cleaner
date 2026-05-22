@@ -160,6 +160,8 @@ def _call_provider(config: dict, api_key: str, senders: list, existing_labels: l
         'temperature': 0.3,
     }
 
+    print(f"[ai_labeler] → {config['model']} | {len(senders)} senders | {len(existing_labels)} labels")
+
     response = _http.post(
         f"{config['base_url']}/chat/completions",
         headers={
@@ -171,15 +173,34 @@ def _call_provider(config: dict, api_key: str, senders: list, existing_labels: l
     )
     response.raise_for_status()
 
-    body    = response.json()
-    choice  = body['choices'][0]
-    content = choice['message']['content']
+    body          = response.json()
+    choice        = body['choices'][0]
+    finish_reason = choice.get('finish_reason', 'unknown')
+    message       = choice.get('message', {})
+    content       = message.get('content') or ''
 
-    # Warn if the model hit its output token limit (response may be truncated)
-    finish_reason = choice.get('finish_reason', '')
+    # Some thinking-mode responses put text in reasoning_content instead of content
+    if not content.strip():
+        content = message.get('reasoning_content') or ''
+
+    usage = body.get('usage', {})
+    print(
+        f"[ai_labeler] ← finish_reason={finish_reason!r} | "
+        f"content={len(content)} chars | "
+        f"tokens in={usage.get('prompt_tokens','?')} out={usage.get('completion_tokens','?')}"
+    )
+
     if finish_reason == 'length':
-        print(f"[ai_labeler] finish_reason=length — response truncated at {len(content)} chars. "
-              f"Consider reducing AI_MAX_SENDERS (currently {len(senders)}).")
+        raise ValueError(
+            f"Response truncated (finish_reason=length) after {len(content)} chars — "
+            f"try fewer senders (sent {len(senders)})"
+        )
+
+    if not content.strip():
+        raise ValueError(
+            f"Empty content from API (finish_reason={finish_reason!r}) — "
+            f"DeepSeek JSON mode occasionally returns empty; will retry"
+        )
 
     cleaned = _clean_json(content)
     return json.loads(cleaned)

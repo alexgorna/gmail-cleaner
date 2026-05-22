@@ -261,12 +261,21 @@ def suggest_labels():
     except Exception as e:
         print(f"Label fetch for AI failed: {e}")
 
+    print(f"[suggest_labels] Starting: {len(senders)} senders, {len(label_names)} labels")
     try:
         result = ai_labeler.suggest_labels(senders, label_names)
+        group_count = len(result.get('suggestions', []))
+        print(f"[suggest_labels] OK: {group_count} groups returned")
+        result['_meta'] = {
+            'senders_sent': len(senders),
+            'labels_sent':  len(label_names),
+            'groups':       group_count,
+        }
         return jsonify(result)
     except Exception as e:
-        print(f"AI suggestion error: {e}")
-        return jsonify({'error': str(e)}), 503
+        msg = str(e)
+        print(f"[suggest_labels] Error: {msg}")
+        return jsonify({'error': msg, '_meta': {'senders_sent': len(senders)}}), 503
 
 
 # --- APPLY ACTIONS ---

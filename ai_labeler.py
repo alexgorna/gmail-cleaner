@@ -4,7 +4,7 @@ AI Label Suggester — pluggable email grouping & Gmail label suggestion.
 Feature flag : AI_LABELING_ENABLED   (default: true)  — set to "false" to disable entirely
 Provider      : AI_PROVIDER           (default: deepseek) — swap to "openai" or any key in PROVIDER_CONFIGS
 Max senders   : AI_MAX_SENDERS        (default: 500)
-Timeout       : AI_TIMEOUT_SECONDS    (default: 90)
+Timeout       : AI_TIMEOUT_SECONDS    (default: 90)  — read timeout per chunk; connect timeout is fixed at 10s
 
 To add a new provider: add an entry to PROVIDER_CONFIGS and set AI_PROVIDER=<key>.
 To disable entirely:   set AI_LABELING_ENABLED=false — no API calls will be made.
@@ -29,7 +29,7 @@ PROVIDER_CONFIGS = {
     'deepseek': {
         'base_url':    'https://api.deepseek.com',
         'api_key_env': 'DEEPSEEK_API_KEY',
-        'model':       'deepseek-v4-flash',
+        'model':       'deepseek-chat',
     },
     'openai': {
         'base_url':    'https://api.openai.com/v1',
@@ -42,12 +42,13 @@ PROVIDER_CONFIGS = {
 _SYSTEM_PROMPT = """You are an email organization assistant helping a user label their Gmail inbox.
 
 You will receive:
-1. A list of sender email addresses
+1. A list of sender email addresses (with optional subject lines for context)
 2. The user's existing Gmail labels (with "/" for nesting, e.g. "Finance/Banks")
 
 Your job:
 1. Group senders that belong to the same company or organization. Think broadly — use domain knowledge, brand recognition, and common sense. For example, billing@harvard.edu and alumni@harvard-education.com both belong to "Harvard". Senders like noreply@stripe.com, billing@stripe.com, and receipts@stripe.com all belong to "Stripe".
-2. For each group, suggest the best Gmail label. Study the user's existing label names and structure, and follow the same style and hierarchy wherever it makes sense.
+2. For each group, decide whether a label is worth applying. Use action "no_label" when the sender appears to be a real person sending ad-hoc, infrequent, or conversational messages rather than automated/transactional email. Signals for "no_label": personal Gmail/Yahoo/Outlook addresses, subject lines that look like one-off conversations, irregular contact that isn't a service or newsletter.
+3. For groups that deserve a label, suggest the best Gmail label. Study the user's existing label names and structure, and follow the same style and hierarchy wherever it makes sense.
 
 Return a JSON object following this exact schema — no markdown fences, no explanation:
 {
@@ -64,13 +65,18 @@ Return a JSON object following this exact schema — no markdown fences, no expl
       "action": "create_new",
       "label": "Newsletters/New Place",
       "parent": "Newsletters"
+    },
+    {
+      "senders": ["john.doe@gmail.com"],
+      "group_name": "John Doe",
+      "action": "no_label"
     }
   ]
 }
 
 Rules:
-- "action" must be "use_existing" when the exact label already appears in the user's label list; otherwise "create_new"
-- "label" is the full label path using "/" for nesting (e.g. "Finance/Stripe")
+- "action" must be "use_existing" when the exact label already appears in the user's label list; "create_new" when a new label should be created; "no_label" when labeling is not recommended
+- "label" is the full label path using "/" for nesting (e.g. "Finance/Stripe") — omit entirely when action is "no_label"
 - "parent" is only included when action is "create_new" and you recommend nesting — set to the parent label name only (e.g. "Finance"), omit otherwise
 - Every sender in the input must appear in exactly one group — no sender may be omitted or duplicated
 - Keep group_name short and recognizable (company or brand name, not domain)
@@ -182,6 +188,8 @@ def _call_provider(config: dict, api_key: str, senders: list, existing_labels: l
 
     print(f"[ai_labeler] → {config['model']} | {len(senders)} senders | {len(existing_labels)} labels")
 
+    # timeout=(connect_seconds, read_seconds) — read timeout fires if the server
+    # goes silent for that many seconds between bytes, catching slow model responses.
     response = _http.post(
         f"{config['base_url']}/chat/completions",
         headers={
@@ -189,7 +197,7 @@ def _call_provider(config: dict, api_key: str, senders: list, existing_labels: l
             'Content-Type': 'application/json',
         },
         json=payload,
-        timeout=AI_TIMEOUT_SECONDS,
+        timeout=(10, AI_TIMEOUT_SECONDS),
     )
     response.raise_for_status()
 

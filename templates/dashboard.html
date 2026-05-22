@@ -74,6 +74,10 @@
         .row-processed .action-select { background-color: #e9ecef; border-color: #dee2e6; color: #6c757d; }
 
         .row-ai-applied { background-color: #eff6ff; border-left: 3px solid #3b82f6; }
+
+        .label-options { display: flex; gap: 14px; margin-top: 6px; justify-content: flex-end; }
+        .label-opt-item { font-size: 0.75rem; color: #64748b; display: flex; align-items: center; gap: 4px; cursor: pointer; white-space: nowrap; user-select: none; }
+        .label-opt-item input[type="checkbox"] { width: 13px; height: 13px; margin: 0; cursor: pointer; accent-color: #3b82f6; }
         
         .action-select { border-radius: 20px; border: 1px solid #cbd5e1; background-color: #fff; font-size: 0.9rem; padding: 6px 30px 6px 12px; cursor: pointer; transition: all 0.2s; }
         .action-select:hover { border-color: #94a3b8; background-color: #f8fafc; }
@@ -443,6 +447,10 @@
                             ${labelOptionsHTML}
                         </optgroup>
                     </select>
+                    <div class="label-options" data-email="${row.email}" style="display:${(pendingActions[row.email] && pendingActions[row.email].action === 'label') ? 'flex' : 'none'}">
+                        <label class="label-opt-item"><input type="checkbox" onchange="toggleLabelOption(this,'skipInbox')" ${(pendingActions[row.email] && pendingActions[row.email].skipInbox === false) ? '' : 'checked'}> Skip Inbox</label>
+                        <label class="label-opt-item"><input type="checkbox" onchange="toggleLabelOption(this,'autoLabel')" ${(pendingActions[row.email] && pendingActions[row.email].autoLabel === false) ? '' : 'checked'}> Auto Label</label>
+                    </div>
                 </td>
             `;
             
@@ -773,6 +781,7 @@
     function handleActionChange(selectElem) {
         const val = selectElem.value;
         const email = selectElem.dataset.email;
+        const optionsDiv = document.querySelector(`.label-options[data-email="${CSS.escape(email)}"]`);
         if (val === 'new_label') {
             currentEditingRowEmail = email;
             isBulkCreate = false;
@@ -782,12 +791,26 @@
         } else if (val.startsWith('label:')) {
             const labelId = val.split(':')[1];
             const labelName = selectElem.options[selectElem.selectedIndex].text;
-            pendingActions[email] = { action: 'label', labelId: labelId, labelName: labelName };
+            // Preserve existing skipInbox / autoLabel if the user already toggled them
+            const prev = pendingActions[email] || {};
+            pendingActions[email] = {
+                action: 'label', labelId, labelName,
+                skipInbox: prev.skipInbox !== false,
+                autoLabel: prev.autoLabel !== false,
+            };
+            if (optionsDiv) optionsDiv.style.display = 'flex';
         } else if (val === 'delete') {
             pendingActions[email] = { action: 'delete' };
-        } else { 
-            delete pendingActions[email]; 
+            if (optionsDiv) optionsDiv.style.display = 'none';
+        } else {
+            delete pendingActions[email];
+            if (optionsDiv) optionsDiv.style.display = 'none';
         }
+    }
+
+    function toggleLabelOption(checkboxEl, field) {
+        const email = checkboxEl.closest('.label-options').dataset.email;
+        if (pendingActions[email]) pendingActions[email][field] = checkboxEl.checked;
     }
     
     function toggleNestDropdown() { document.getElementById('parentLabelSelect').disabled = !document.getElementById('nestLabelCheck').checked; }

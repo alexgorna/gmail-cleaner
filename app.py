@@ -343,10 +343,16 @@ def apply_actions():
 
                 elif action_type == 'label':
                     label_id = item['labelId']
+                    skip_inbox = item.get('skipInbox', True)
+                    auto_label = item.get('autoLabel', True)
 
-                    filter_body = {'criteria': {'from': email}, 'action': {'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}}
-                    try: execute_with_retry(service.users().settings().filters().create(userId='me', body=filter_body))
-                    except: pass
+                    if auto_label:
+                        filter_action = {'addLabelIds': [label_id]}
+                        if skip_inbox:
+                            filter_action['removeLabelIds'] = ['INBOX']
+                        filter_body = {'criteria': {'from': email}, 'action': filter_action}
+                        try: execute_with_retry(service.users().settings().filters().create(userId='me', body=filter_body))
+                        except: pass
 
                     msgs = []
                     token = None
@@ -358,13 +364,16 @@ def apply_actions():
 
                     if msgs:
                         all_ids = [m['id'] for m in msgs]
+                        modify_body = {'addLabelIds': [label_id]}
+                        if skip_inbox:
+                            modify_body['removeLabelIds'] = ['INBOX']
                         for i in range(0, len(all_ids), BATCH_SIZE):
                             ids = all_ids[i:i + BATCH_SIZE]
-                            try: execute_with_retry(service.users().messages().batchModify(userId='me', body={'ids': ids, 'addLabelIds': [label_id], 'removeLabelIds': ['INBOX']}))
+                            try: execute_with_retry(service.users().messages().batchModify(userId='me', body={**modify_body, 'ids': ids}))
                             except: pass
                             time.sleep(BATCH_SLEEP_SECONDS)
 
-                    yield json.dumps({"status": "row_complete", "email": email, "action": f"label:{label_id}", "msg": f"  - Moved {len(msgs)} emails."}) + "\n"
+                    yield json.dumps({"status": "row_complete", "email": email, "action": f"label:{label_id}", "msg": f"  - Labelled {len(msgs)} emails."}) + "\n"
             except Exception as e:
                 yield json.dumps({"msg": f"Error: {str(e)}"}) + "\n"
 

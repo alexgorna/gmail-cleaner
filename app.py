@@ -5,6 +5,7 @@ import uuid
 import httplib2
 import redis as redis_lib
 import google_auth_httplib2
+import concurrent.futures
 from werkzeug.middleware.proxy_fix import ProxyFix
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response, stream_with_context
 from flask_session import Session
@@ -301,40 +302,53 @@ def ai_results(job_id):
 
 
 # --- APPLY ACTIONS ---
+PARALLEL_WORKERS = 5  # Process this many senders simultaneously
+
 @app.route('/api/apply_actions', methods=['POST'])
 def apply_actions():
     actions = request.json
-    def generate_updates():
-        service = get_service()
-        if not service: return
+    # Capture credentials before entering the generator — Flask session not available in threads
+    creds_data = session.get('credentials')
+    if not creds_data:
+        return jsonify({'error': 'Not logged in'}), 401
 
-        def execute_with_retry(req):
+    def generate_updates():
+
+        def make_service():
+            """Each worker thread gets its own HTTP connection and service object."""
+            http = httplib2.Http(timeout=20)
+            from google.oauth2.credentials import Credentials as OAuthCreds
+            creds = OAuthCreds(**creds_data)
+            authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
+            return build('gmail', 'v1', http=authorized_http)
+
+        def exec_retry(service, req):
             for attempt in range(MAX_RETRIES):
                 try:
                     return req.execute()
                 except HttpError as e:
-                    # Only retry on rate limit / server errors; fail fast on client errors
                     if e.resp.status in (429, 500, 503):
-                        time.sleep(min(2 ** attempt, 8))  # 1s, 2s, 4s max
+                        time.sleep(min(2 ** attempt, 8))
                     else:
-                        raise  # 400, 401, 403 etc. — no point retrying
+                        raise
                 except Exception:
                     time.sleep(min(2 ** attempt, 8))
             raise Exception(f"Gmail API call failed after {MAX_RETRIES} retries")
 
-        yield json.dumps({"msg": "Starting actions..."}) + "\n"
-
-        for item in actions:
+        def process_item(item):
+            """Run in a worker thread — builds its own service to avoid shared-state issues."""
+            service = make_service()
             email = item['email']
             action_type = item['action']
-            yield json.dumps({"msg": f"Processing: {email}..."}) + "\n"
 
             try:
                 if action_type == 'delete':
                     msgs = []
                     token = None
                     while True:
-                        res = execute_with_retry(service.users().messages().list(userId='me', q=f"from:{email}", maxResults=MAX_MESSAGES_PER_PAGE, pageToken=token))
+                        res = exec_retry(service, service.users().messages().list(
+                            userId='me', q=f"from:{email}",
+                            maxResults=MAX_MESSAGES_PER_PAGE, pageToken=token))
                         msgs.extend(res.get('messages', []))
                         token = res.get('nextPageToken')
                         if not token: break
@@ -342,13 +356,13 @@ def apply_actions():
                     if msgs:
                         all_ids = [m['id'] for m in msgs]
                         batches = [all_ids[i:i + BATCH_SIZE] for i in range(0, len(all_ids), BATCH_SIZE)]
-                        for idx, ids in enumerate(batches):
-                            try: execute_with_retry(service.users().messages().batchModify(userId='me', body={'ids': ids, 'addLabelIds': ['TRASH']}))
+                        for ids in batches:
+                            try: exec_retry(service, service.users().messages().batchModify(
+                                userId='me', body={'ids': ids, 'addLabelIds': ['TRASH']}))
                             except: pass
-                            if BATCH_SLEEP_SECONDS and idx < len(batches) - 1:
-                                time.sleep(BATCH_SLEEP_SECONDS)
 
-                    yield json.dumps({"status": "row_complete", "email": email, "action": "delete", "msg": "  - Emails deleted."}) + "\n"
+                    return {"status": "row_complete", "email": email, "action": "delete",
+                            "msg": f"  - {len(msgs)} emails deleted."}
 
                 elif action_type == 'label':
                     label_id = item['labelId']
@@ -360,13 +374,16 @@ def apply_actions():
                         if skip_inbox:
                             filter_action['removeLabelIds'] = ['INBOX']
                         filter_body = {'criteria': {'from': email}, 'action': filter_action}
-                        try: execute_with_retry(service.users().settings().filters().create(userId='me', body=filter_body))
+                        try: exec_retry(service, service.users().settings().filters().create(
+                            userId='me', body=filter_body))
                         except: pass
 
                     msgs = []
                     token = None
                     while True:
-                        res = execute_with_retry(service.users().messages().list(userId='me', q=f"in:inbox from:{email}", maxResults=MAX_MESSAGES_PER_PAGE, pageToken=token))
+                        res = exec_retry(service, service.users().messages().list(
+                            userId='me', q=f"in:inbox from:{email}",
+                            maxResults=MAX_MESSAGES_PER_PAGE, pageToken=token))
                         msgs.extend(res.get('messages', []))
                         token = res.get('nextPageToken')
                         if not token: break
@@ -377,15 +394,35 @@ def apply_actions():
                         if skip_inbox:
                             modify_body['removeLabelIds'] = ['INBOX']
                         batches = [all_ids[i:i + BATCH_SIZE] for i in range(0, len(all_ids), BATCH_SIZE)]
-                        for idx, ids in enumerate(batches):
-                            try: execute_with_retry(service.users().messages().batchModify(userId='me', body={**modify_body, 'ids': ids}))
+                        for ids in batches:
+                            try: exec_retry(service, service.users().messages().batchModify(
+                                userId='me', body={**modify_body, 'ids': ids}))
                             except: pass
-                            if BATCH_SLEEP_SECONDS and idx < len(batches) - 1:
-                                time.sleep(BATCH_SLEEP_SECONDS)
 
-                    yield json.dumps({"status": "row_complete", "email": email, "action": f"label:{label_id}", "msg": f"  - Labelled {len(msgs)} emails."}) + "\n"
+                    return {"status": "row_complete", "email": email,
+                            "action": f"label:{label_id}",
+                            "msg": f"  - Labelled {len(msgs)} emails."}
+
+                else:
+                    return {"status": "row_complete", "email": email,
+                            "action": action_type, "msg": "  - Skipped."}
+
             except Exception as e:
-                yield json.dumps({"msg": f"Error: {str(e)}"}) + "\n"
+                return {"status": "row_complete", "email": email,
+                        "action": "error", "msg": f"  - Error: {str(e)}"}
+
+        yield json.dumps({"msg": f"Starting {len(actions)} actions ({PARALLEL_WORKERS} parallel)..."}) + "\n"
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
+            future_to_email = {executor.submit(process_item, item): item['email'] for item in actions}
+            for future in concurrent.futures.as_completed(future_to_email):
+                try:
+                    result = future.result()
+                except Exception as e:
+                    email = future_to_email[future]
+                    result = {"status": "row_complete", "email": email,
+                              "action": "error", "msg": f"  - Error: {str(e)}"}
+                yield json.dumps(result) + "\n"
 
         yield json.dumps({"status": "complete"}) + "\n"
 

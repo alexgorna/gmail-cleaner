@@ -227,6 +227,139 @@
 
         /* ── UX Epic: No-label warning (WCAG AA contrast) ── */
         .ai-no-label-warning { color: #C2410C; display: inline-flex; align-items: center; gap: 4px; }
+
+        /* ── Mobile Responsive Epic ── */
+
+        /* Bottom sheet — hidden by default, slides up when rows are selected */
+        #mobile-bottom-sheet {
+            position: fixed; bottom: 0; left: 0; right: 0; z-index: 1050;
+            background: white;
+            border-top: 1px solid #e2e8f0;
+            border-radius: 16px 16px 0 0;
+            box-shadow: 0 -4px 20px rgba(0,0,0,0.15);
+            padding: 16px 20px 28px;
+            transform: translateY(110%);
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex; flex-direction: column; gap: 12px;
+        }
+        #mobile-bottom-sheet.visible { transform: translateY(0); }
+        .mobile-sheet-header { display: flex; align-items: center; justify-content: space-between; }
+        .mobile-sheet-count { font-size: 0.95rem; font-weight: 600; color: #1d4ed8; }
+        .mobile-sheet-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .mobile-sheet-actions .btn { flex: 1; min-height: 44px; font-size: 0.875rem; font-weight: 500; border-radius: 20px; }
+        .mobile-sheet-label-row { display: flex; align-items: center; gap: 8px; }
+        .mobile-sheet-label-select {
+            flex: 1; min-height: 44px; border-radius: 20px;
+            border: 1px solid #cbd5e1; font-size: 0.875rem;
+            padding: 8px 16px; background: #fff; cursor: pointer;
+            appearance: auto;
+        }
+
+        /* Mobile tooltip overlay */
+        #mobile-tooltip-overlay {
+            display: none; position: fixed; inset: 0; z-index: 2000;
+            background: rgba(0,0,0,0.5);
+            align-items: center; justify-content: center; padding: 24px;
+        }
+        #mobile-tooltip-overlay.visible { display: flex; }
+        .mobile-tooltip-box {
+            background: white; border-radius: 12px; padding: 20px 22px;
+            max-width: 360px; width: 100%;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+        }
+        .mobile-tooltip-text { font-size: 0.9rem; color: #334155; line-height: 1.5; margin-bottom: 16px; }
+        .mobile-tooltip-close {
+            width: 100%; min-height: 44px;
+            background: #f1f5f9; border: none; border-radius: 8px;
+            font-size: 0.875rem; font-weight: 600; color: #475569; cursor: pointer;
+        }
+        .mobile-tooltip-close:active { background: #e2e8f0; }
+
+        @media (max-width: 768px) {
+            /* ── Card Stack: convert table rows to CSS Grid cards ── */
+            .table-custom thead { display: none; }
+            .table-custom tbody { display: block; padding: 8px; }
+            .table-custom tr {
+                display: grid !important;
+                grid-template-columns: 48px 1fr auto;
+                grid-template-areas: "check email count" "check action action";
+                border: 1px solid #e2e8f0 !important;
+                border-radius: 12px !important;
+                margin-bottom: 8px !important;
+                background: white !important;
+                overflow: hidden;
+            }
+            /* Card zebra — apply on the tr, not td */
+            .table-custom tbody tr:nth-child(even) { background: #f8fafc !important; }
+            /* Clear td-level zebra overrides from UX epic (not needed on mobile) */
+            .table-custom tbody tr:nth-child(even) td { background-color: transparent !important; }
+            .table-custom tbody tr:nth-child(odd) td { background-color: transparent !important; }
+            /* Touch press feedback */
+            .table-custom tbody tr:active { background: #f0f9ff !important; }
+            .table-custom tbody tr:active td { background-color: transparent !important; }
+
+            /* Remove cell-level borders on mobile */
+            .table-custom td { border-bottom: none !important; border-left: none !important; }
+
+            /* Grid area assignments: td order is checkbox, email, count, action */
+            .table-custom td:nth-child(1) {
+                grid-area: check;
+                display: flex; align-items: center; justify-content: center;
+                padding: 14px 4px !important;
+            }
+            .table-custom td:nth-child(2) {
+                grid-area: email;
+                padding: 12px 8px 6px 0 !important;
+            }
+            .table-custom td:nth-child(3) {
+                grid-area: count;
+                display: flex !important;
+                align-items: center; justify-content: center;
+                padding: 12px 12px 6px 4px !important;
+            }
+            .table-custom td:nth-child(4) {
+                grid-area: action;
+                padding: 6px 12px 12px 0 !important;
+                border-top: 1px solid #f1f5f9 !important;
+                text-align: left !important;
+            }
+
+            /* Checkbox — 20×20, with 44px cell for touch */
+            .table-custom td:nth-child(1) .form-check-input { width: 20px; height: 20px; cursor: pointer; }
+
+            /* Count badge compact */
+            .table-custom td:nth-child(3) .count-badge { padding: 4px 10px; font-size: 0.78rem; min-width: 28px; }
+
+            /* Action select fills card width */
+            .action-select { max-width: 100% !important; width: 100% !important; }
+
+            /* Label options align left on mobile */
+            .label-options { justify-content: flex-start !important; }
+
+            /* AI-applied card highlight */
+            .row-ai-applied { border-left: 3px solid #3b82f6 !important; }
+
+            /* Hide desktop bulk bar — bottom sheet handles it on mobile */
+            #bulk-actions-container { display: none !important; }
+
+            /* AI hint touch targets */
+            .btn-ai-apply { min-height: 34px; padding: 6px 14px; font-size: 0.78rem; }
+            .btn-ai-dismiss { min-height: 34px; padding: 6px 10px; font-size: 0.78rem; }
+
+            /* AI info button — bigger tap target */
+            .ai-info-btn {
+                min-width: 34px; min-height: 34px;
+                display: inline-flex; align-items: center; justify-content: center;
+                font-size: 0.85rem;
+            }
+
+            /* Touch active states */
+            .btn-ai-apply:active { background: #dbeafe; }
+            .btn-ai-dismiss:active { background: #e2e8f0; }
+
+            /* Compact sub-header on mobile */
+            .scan-subheader { padding: 6px 12px; font-size: 0.75rem; }
+        }
     </style>
 </head>
 <body>
@@ -404,6 +537,36 @@
     </div>
 </div>
 
+<!-- Mobile bottom sheet (selection actions, shown when rows are checked on mobile) -->
+<div id="mobile-bottom-sheet">
+    <div class="mobile-sheet-header">
+        <span id="mobile-sheet-count" class="mobile-sheet-count">0 items selected</span>
+        <button class="btn-deselect-all" onclick="deselectAll()">✕ Deselect All</button>
+    </div>
+    <div class="mobile-sheet-actions">
+        <button class="btn btn-outline-danger" onclick="applyBulkRowAction('delete')">
+            <i class="bi bi-trash me-1"></i> Delete
+        </button>
+        <button class="btn btn-outline-secondary" onclick="applyBulkRowAction('none'); deselectAll()">
+            <i class="bi bi-x-circle me-1"></i> Clear
+        </button>
+    </div>
+    <div class="mobile-sheet-label-row">
+        <select id="mobile-sheet-label-select" class="mobile-sheet-label-select" onchange="applyMobileSheetLabel(this)">
+            <option value="">Label selected as…</option>
+            <option value="new_label">+ Create New Label</option>
+        </select>
+    </div>
+</div>
+
+<!-- Mobile tooltip overlay (Bootstrap tooltips don't fire on touch hover) -->
+<div id="mobile-tooltip-overlay" onclick="closeMobileTooltip()">
+    <div class="mobile-tooltip-box" onclick="event.stopPropagation()">
+        <p id="mobile-tooltip-text" class="mobile-tooltip-text"></p>
+        <button class="mobile-tooltip-close" onclick="closeMobileTooltip()">Close</button>
+    </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
     let allData = [];
@@ -559,6 +722,15 @@
                     infoBtn.setAttribute('data-bs-placement', 'top');
                     infoBtn.setAttribute('title', tooltipText);
                     infoBtn.innerHTML = '<i class="bi bi-info-circle" aria-hidden="true"></i>';
+                    // Mobile: tap shows full-screen overlay instead of hover tooltip
+                    infoBtn.setAttribute('data-tooltip-text', tooltipText);
+                    infoBtn.addEventListener('click', (e) => {
+                        if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            showMobileTooltip(tooltipText);
+                        }
+                    });
 
                     const applyBtn = document.createElement('button');
                     applyBtn.className = 'btn-ai-apply';
@@ -609,10 +781,15 @@
         const totalEmails = filteredData.reduce((sum, item) => sum + item.count, 0);
         const allTotal = allData.reduce((sum, item) => sum + item.count, 0);
         const allSenders = allData.length;
+        const isMobile = window.innerWidth <= 768;
         if (uniqueSenders < allSenders) {
-            subheaderText.textContent = `Showing ${uniqueSenders.toLocaleString()} sender${uniqueSenders !== 1 ? 's' : ''} (${totalEmails.toLocaleString()} emails) — filtered from ${allSenders.toLocaleString()} unique senders across ${allTotal.toLocaleString()} total emails`;
+            subheaderText.textContent = isMobile
+                ? `${uniqueSenders.toLocaleString()} senders, ${totalEmails.toLocaleString()} emails (filtered)`
+                : `Showing ${uniqueSenders.toLocaleString()} sender${uniqueSenders !== 1 ? 's' : ''} (${totalEmails.toLocaleString()} emails) — filtered from ${allSenders.toLocaleString()} unique senders across ${allTotal.toLocaleString()} total emails`;
         } else {
-            subheaderText.textContent = `Grouped by ${allSenders.toLocaleString()} unique sender${allSenders !== 1 ? 's' : ''} across ${allTotal.toLocaleString()} total email${allTotal !== 1 ? 's' : ''}`;
+            subheaderText.textContent = isMobile
+                ? `${allSenders.toLocaleString()} senders, ${allTotal.toLocaleString()} emails total`
+                : `Grouped by ${allSenders.toLocaleString()} unique sender${allSenders !== 1 ? 's' : ''} across ${allTotal.toLocaleString()} total email${allTotal !== 1 ? 's' : ''}`;
         }
     }
 
@@ -627,15 +804,19 @@
         const bulkContainer = document.getElementById('bulk-actions-container');
         const searchContainer = document.getElementById('search-container');
         const indicator = document.getElementById('selection-count');
+        const mobileSheet = document.getElementById('mobile-bottom-sheet');
+        const mobileCount = document.getElementById('mobile-sheet-count');
+        const label = `${count} item${count !== 1 ? 's' : ''} selected`;
 
         if (count > 0) {
             searchContainer.style.display = 'none';
-            bulkContainer.style.display = 'flex';
-            indicator.textContent = `${count} item${count !== 1 ? 's' : ''} selected`;
+            bulkContainer.style.display = 'flex';   // desktop bar (hidden on mobile via CSS)
+            indicator.textContent = label;
+            if (mobileSheet) { mobileSheet.classList.add('visible'); mobileCount.textContent = label; }
         } else {
             bulkContainer.style.display = 'none';
             searchContainer.style.display = 'block';
-            // Reset select-all checkbox if nothing is checked
+            if (mobileSheet) mobileSheet.classList.remove('visible');
             const selectAll = document.getElementById('selectAll');
             if (selectAll) selectAll.checked = false;
         }
@@ -649,13 +830,23 @@
     }
 
     function populateBulkDropdown() {
+        // Desktop dropdown
         const ul = document.getElementById('bulk-label-dropdown');
         let html = `<li><a class="dropdown-item fw-bold text-primary" href="#" onclick="openBulkCreateModal()">+ Create New Label</a></li>`;
         html += `<li><hr class="dropdown-divider"></li>`;
-        html += existingLabels.filter(l => l.type === 'user').map(l => 
+        html += existingLabels.filter(l => l.type === 'user').map(l =>
             `<li><a class="dropdown-item" href="#" onclick="applyBulkRowAction('label:${l.id}')">${l.name}</a></li>`
         ).join('');
         ul.innerHTML = html;
+        // Mobile bottom sheet label select
+        const mobileSelect = document.getElementById('mobile-sheet-label-select');
+        if (mobileSelect) {
+            let opts = `<option value="">Label selected as…</option><option value="new_label">+ Create New Label</option>`;
+            opts += existingLabels.filter(l => l.type === 'user').map(l =>
+                `<option value="label:${l.id}">${l.name}</option>`
+            ).join('');
+            mobileSelect.innerHTML = opts;
+        }
     }
 
     function openBulkCreateModal() {
@@ -1395,6 +1586,39 @@
         aiSuggestions = {};
         updateAIBulkButtons();
     }
+
+    // ── Mobile helpers ──
+
+    function showMobileTooltip(text) {
+        const overlay = document.getElementById('mobile-tooltip-overlay');
+        const textEl = document.getElementById('mobile-tooltip-text');
+        if (overlay && textEl) {
+            textEl.textContent = text;
+            overlay.classList.add('visible');
+        }
+    }
+
+    function closeMobileTooltip() {
+        const overlay = document.getElementById('mobile-tooltip-overlay');
+        if (overlay) overlay.classList.remove('visible');
+    }
+
+    function applyMobileSheetLabel(select) {
+        const val = select.value;
+        if (!val) return;
+        if (val === 'new_label') {
+            openBulkCreateModal();
+        } else {
+            applyBulkRowAction(val);
+        }
+        // Reset select back to placeholder
+        select.value = '';
+    }
+
+    // Re-compute compact vs full sub-header text on resize
+    window.addEventListener('resize', () => {
+        if (filteredData.length > 0) updateSubheader();
+    });
 </script>
 </body>
 </html>

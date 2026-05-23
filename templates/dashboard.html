@@ -228,6 +228,13 @@
         /* ── UX Epic: No-label warning (WCAG AA contrast) ── */
         .ai-no-label-warning { color: #C2410C; display: inline-flex; align-items: center; gap: 4px; }
 
+        /* ── Mobile-only elements: hidden on desktop by default ── */
+        .mobile-expand-chevron { display: none; }
+        .mobile-ai-chip { display: none; }
+        /* Email line wrapper: inline on desktop so gmail link stays adjacent */
+        .email-line-wrapper { display: inline; }
+        .email-addr-text { display: inline; }
+
         /* ── Mobile Responsive Epic ── */
 
         /* Bottom sheet — hidden by default, slides up when rows are selected */
@@ -332,11 +339,12 @@
                 padding: 14px 4px !important;
                 cursor: default;
             }
-            /* Email cell */
+            /* Email cell — min-width:0 prevents grid overflow that pushes count off-screen */
             .table-custom td:nth-child(2) {
                 grid-area: email;
                 padding: 13px 8px 13px 0 !important;
                 display: flex; flex-direction: column; justify-content: center;
+                min-width: 0; overflow: hidden;
             }
             /* Count cell */
             .table-custom td:nth-child(3) {
@@ -360,13 +368,17 @@
             .table-custom .ai-hint { display: none !important; }
             .table-custom tr.card-expanded .ai-hint { display: flex !important; margin-top: 8px; }
 
-            /* Email line wrapper */
+            /* Email line wrapper: flex only on mobile */
             .email-line-wrapper {
                 display: flex; align-items: center; gap: 4px; width: 100%;
             }
-            .email-addr-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.875rem; font-weight: 500; color: #0f172a; }
+            .email-addr-text {
+                display: block; flex: 1; min-width: 0;
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                font-size: 0.875rem; font-weight: 500; color: #0f172a;
+            }
 
-            /* AI chip: shows in collapsed mode, hides when expanded */
+            /* AI chip: show in collapsed mode only */
             .mobile-ai-chip {
                 display: inline-flex; align-items: center; gap: 2px;
                 background: #eff6ff; color: #1d4ed8;
@@ -378,6 +390,7 @@
 
             /* Expand/collapse chevron */
             .mobile-expand-chevron {
+                display: inline-block;
                 color: #94a3b8; font-size: 0.7rem; flex-shrink: 0;
                 transition: transform 0.2s ease, color 0.15s;
             }

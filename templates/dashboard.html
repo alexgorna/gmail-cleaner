@@ -229,6 +229,7 @@
         /* ── Mobile-only elements: hidden on desktop by default ── */
         .mobile-expand-chevron { display: none; }
         .mobile-ai-chip { display: none; }
+        .mobile-ai-row { display: none; }
         /* Email line wrapper: inline on desktop so gmail link stays adjacent */
         .email-line-wrapper { display: inline; }
         .email-addr-text { display: inline; }
@@ -352,20 +353,27 @@
                 gap: 6px;
                 padding: 13px 14px 13px 6px !important;
             }
-            /* Action cell: hidden collapsed, shown expanded */
+            /* Action cell: hidden collapsed, flex-column when expanded */
             .table-custom td:nth-child(4) {
                 grid-area: action;
                 display: none !important;
-                padding: 10px 12px 14px 0 !important;
+                padding: 10px 14px 14px 14px !important;
                 border-top: 1px solid #e2e8f0 !important;
-                text-align: left !important;
                 cursor: default;
             }
-            .table-custom tr.card-expanded td:nth-child(4) { display: block !important; }
+            .table-custom tr.card-expanded td:nth-child(4) {
+                display: flex !important;
+                flex-direction: column;
+                gap: 10px;
+            }
 
-            /* AI hint: hidden collapsed, shown expanded */
+            /* AI hint in email cell: always hidden on mobile (buttons mirrored into action cell) */
             .table-custom .ai-hint { display: none !important; }
-            .table-custom tr.card-expanded .ai-hint { display: flex !important; margin-top: 8px; }
+
+            /* Mobile AI action row — sits inside action cell above the select */
+            .mobile-ai-row {
+                display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+            }
 
             /* Email line wrapper: flex only on mobile */
             .email-line-wrapper {
@@ -783,9 +791,10 @@
                 tr.classList.toggle('card-expanded');
             });
 
-            // Line 2: AI suggestion hint (only if suggestion exists and row not processed)
+            // AI suggestion hint (only if suggestion exists and row not processed)
             const suggestion = !row.processedAction && aiSuggestions[row.email];
             if (suggestion) {
+                // ── Desktop: hint lives in the email cell ──
                 const hintDiv = document.createElement('div');
                 hintDiv.className = 'ai-hint';
                 hintDiv.setAttribute('data-ai-email', row.email);
@@ -809,7 +818,6 @@
 
                     hintText.innerHTML = `${verb} <strong>${escapeHtml(suggestion.label)}</strong> recommended.`;
 
-                    // Info icon with Bootstrap tooltip for context
                     const infoBtn = document.createElement('button');
                     infoBtn.className = 'ai-info-btn';
                     infoBtn.setAttribute('tabindex', '0');
@@ -818,12 +826,10 @@
                     infoBtn.setAttribute('data-bs-placement', 'top');
                     infoBtn.setAttribute('title', tooltipText);
                     infoBtn.innerHTML = '<i class="bi bi-info-circle" aria-hidden="true"></i>';
-                    // Mobile: tap shows full-screen overlay instead of hover tooltip
                     infoBtn.setAttribute('data-tooltip-text', tooltipText);
                     infoBtn.addEventListener('click', (e) => {
                         if ('ontouchstart' in window || navigator.maxTouchPoints > 0) {
-                            e.preventDefault();
-                            e.stopPropagation();
+                            e.preventDefault(); e.stopPropagation();
                             showMobileTooltip(tooltipText);
                         }
                     });
@@ -837,9 +843,34 @@
                     hintDiv.appendChild(infoBtn);
                     hintDiv.appendChild(applyBtn);
                 }
-
                 hintDiv.appendChild(dismissBtn);
                 emailCell.appendChild(hintDiv);
+
+                // ── Mobile: AI buttons live inside the action cell (above the select) ──
+                // The email-cell hintDiv is hidden via CSS on mobile.
+                const mobileAiRow = document.createElement('div');
+                mobileAiRow.className = 'mobile-ai-row';
+                mobileAiRow.setAttribute('data-ai-email', row.email);
+
+                if (suggestion.action === 'no_label') {
+                    const warn = document.createElement('span');
+                    warn.className = 'ai-no-label-warning';
+                    warn.innerHTML = '<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> Not recommended.';
+                    mobileAiRow.appendChild(warn);
+                } else {
+                    const mobApply = document.createElement('button');
+                    mobApply.className = 'btn-ai-apply';
+                    mobApply.textContent = 'Apply AI';
+                    mobApply.onclick = () => applyAISuggestion(row.email);
+                    mobileAiRow.appendChild(mobApply);
+                }
+                const mobDismiss = document.createElement('button');
+                mobDismiss.className = 'btn-ai-dismiss';
+                mobDismiss.textContent = '✕ Dismiss';
+                mobDismiss.onclick = () => dismissAISuggestion(row.email);
+                mobileAiRow.appendChild(mobDismiss);
+
+                actionCell.insertBefore(mobileAiRow, actionCell.firstChild);
             }
 
             const select = tr.querySelector('select');
@@ -1658,8 +1689,8 @@
 
     function dismissAISuggestion(email) {
         delete aiSuggestions[email];
-        const hintEl = document.querySelector(`.ai-hint[data-ai-email="${email}"]`);
-        if (hintEl) hintEl.remove();
+        // Remove both the desktop email-cell hint and the mobile action-cell row
+        document.querySelectorAll(`[data-ai-email="${CSS.escape(email)}"]`).forEach(el => el.remove());
         updateAIBulkButtons();
     }
 

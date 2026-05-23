@@ -360,6 +360,7 @@
                 padding: 10px 14px 14px 14px !important;
                 border-top: 1px solid #e2e8f0 !important;
                 cursor: default;
+                text-align: left !important;   /* override desktop text-end class */
             }
             .table-custom tr.card-expanded td:nth-child(4) {
                 display: flex !important;
@@ -865,11 +866,15 @@
                     warn.innerHTML = '<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> Applying a label not recommended.';
                     mobileAiRow.appendChild(warn);
 
+                    // Wrap in mobile-ai-buttons so the button sizes to content, not full-width
+                    const noLabelBtns = document.createElement('div');
+                    noLabelBtns.className = 'mobile-ai-buttons';
                     const mobDismiss = document.createElement('button');
                     mobDismiss.className = 'btn-ai-dismiss';
                     mobDismiss.textContent = '✕ Dismiss';
                     mobDismiss.onclick = () => dismissAISuggestion(row.email);
-                    mobileAiRow.appendChild(mobDismiss);
+                    noLabelBtns.appendChild(mobDismiss);
+                    mobileAiRow.appendChild(noLabelBtns);
                 } else {
                     // Recommendation text
                     const verb = suggestion.action === 'use_existing' ? 'Existing label' : 'Creating label';

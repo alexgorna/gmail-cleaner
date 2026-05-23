@@ -420,3 +420,108 @@ Railway runs both `web` and `worker` processes from the same deploy. On other pl
 - Consider pinning versions in `requirements.txt` to prevent future silent regressions from library upgrades
 - Google OAuth app verification (required before commercializing — sensitive scopes need Google review)
 - Continue working through the feature backlog
+
+---
+
+### 24. UX Epic — Designer Report: 5-Item Polish Pass + Dev Note
+
+**Commit:** `e1148d0` — *"UX Epic: header hierarchy, zebra rows, selection badge, warning contrast, sub-header, AI tooltips"*
+
+**Context:** A web designer evaluated the app and produced a 5-item report (plus a developer note). All items were implemented in a single epic commit to `templates/dashboard.html`.
+
+**Backup taken:** `backup_ux_epic/dashboard.html.pre_ux_epic` (1292 lines, pre-epic state)
+
+---
+
+#### Item 1 — Header Action Hierarchy
+
+**Problem:** "Dismiss AI" and "Apply AI" (bulk) were both using full outline-button styles (`btn-outline-secondary` and `btn-outline-primary fw-bold`), competing visually with the primary "Apply Actions" CTA. Export CSV and utility buttons had inconsistent weight.
+
+**Fix:**
+- **Dismiss AI** → `btn btn-light text-secondary border rounded-pill` (ghost, same weight as utility row)
+- **Apply AI** (bulk) → `btn btn-outline-secondary rounded-pill fw-bold` (secondary outline — actionable but subordinate)
+- **Apply Actions** → unchanged `btn btn-primary` (dominant CTA)
+- **CSV / Reload / AI** → unchanged `btn btn-light text-secondary border rounded-pill`
+
+Now: Apply Actions is clearly the primary action; bulk AI actions are secondary; utilities are tertiary.
+
+---
+
+#### Item 2 — Table Row Visual Separation
+
+**Problem:** All rows had identical white background; hover effect was too subtle (#f8fafc).
+
+**Fix (CSS additions):**
+```css
+/* Zebra striping */
+.table-custom tbody tr:nth-child(even) td { background-color: #f8fafc; }
+
+/* Stronger hover */
+.table-custom tbody tr:hover td { background-color: #dbeafe !important; }
+
+/* AI-applied rows override zebra (but still yield to hover) */
+.row-ai-applied td { background-color: #eff6ff !important; }
+
+/* Action column subtle left border for visual grouping */
+.table-custom td:last-child { border-left: 1px solid #f1f5f9; }
+.table-custom th:last-child { border-left: 1px solid #e2e8f0; }
+```
+
+The `.row-ai-applied` rule was moved from TR-level to TD-level so it wins over zebra striping from the new nth-child rule.
+
+---
+
+#### Item 3 — Bulk Selection Counter Badge
+
+**Problem:** Selected row count ("0 Selected") was a plain `fw-bold small` span — easy to miss.
+
+**Fix:**
+- Restyled as `.selection-badge` pill: blue background (#eff6ff), blue text (#1d4ed8), blue border (#bfdbfe), rounded-20
+- Text updated from "X Selected" → "X item(s) selected" (grammatically correct)
+- Added **Deselect All** button (`.btn-deselect-all`) inline in the bulk actions bar — clears all checked rows and hides the bulk bar
+- `deselectAll()` JS function added
+
+---
+
+#### Item 4 — Accessibility & Color Contrast (no_label Warning)
+
+**Problem:** `no_label` AI hint text used `color:#92400e` which fails WCAG 2.1 AA contrast ratio. Color alone conveyed warning state (no icon).
+
+**Fix:**
+- Color updated: `#92400e` → `#C2410C` (WCAG AA compliant on white/light backgrounds)
+- Added Bootstrap Icon `bi-exclamation-triangle-fill` before text (color is no longer the sole indicator)
+- Wrapper: `.ai-no-label-warning { color: #C2410C; display: inline-flex; align-items: center; gap: 4px; }`
+- HTML generated: `<span class="ai-no-label-warning"><i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> Applying a label not recommended.</span>`
+
+---
+
+#### Item 5 — Contextual Sub-Header
+
+**Problem:** No contextual information about the scan scope shown to the user after scanning.
+
+**Fix:**
+- Added `<div id="scan-subheader" class="scan-subheader">` between controls-wrapper and table — initially hidden
+- After scan completes: populated as *"Grouped by X unique senders across Y total emails"*
+- When search is active: updates to *"Showing X senders (Y emails) — filtered from A unique senders across B total emails"*
+- `updateSubheader()` JS function called from `handleSearch()` and after scan completion
+- Styled as a thin strip (#fafbfc background, 0.78rem text, #64748b color)
+
+---
+
+#### Item 6 (Dev Note) — On-Demand AI Info Icons with Accessible Tooltips
+
+**Problem:** AI suggestion hints showed label name with no context about what "use existing" vs "create new" means. No keyboard-accessible explanation.
+
+**Fix:**
+- Added `.ai-info-btn` button next to the hint text for `use_existing` and `create_new` suggestions
+- Uses Bootstrap 5's built-in tooltip: `data-bs-toggle="tooltip"` + `data-bs-placement="top"`
+- Tooltip text:
+  - `use_existing`: *"Label 'X' already exists in your Gmail — emails will be organised under it."*
+  - `create_new`: *"A new label 'X' will be created [under 'Parent']."*
+- Accessibility: `tabindex="0"`, `aria-label="More info about this suggestion"`, focus-visible outline
+- Tooltips initialized after each `renderTable()` call via: `new bootstrap.Tooltip(el, { trigger: 'hover focus' })`
+- CSS: `.ai-info-btn:focus { outline: 2px solid #bfdbfe; }` for visible keyboard focus ring
+
+---
+
+**All 6 items committed and pushed in one epic commit.** Railway auto-deploys on push to `main`.

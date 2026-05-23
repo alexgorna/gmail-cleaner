@@ -372,15 +372,22 @@
 
             /* Mobile AI action row — sits inside action cell above the select */
             .mobile-ai-row {
+                display: flex; flex-direction: column; gap: 6px;
+            }
+            .mobile-ai-row .mobile-ai-buttons {
                 display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
             }
+
+            /* AI bulk controls: fill width, no blank left space */
+            #ai-bulk-controls { width: 100%; }
+            #ai-bulk-controls .btn { flex: 1; justify-content: center; }
 
             /* Email line wrapper: flex only on mobile */
             .email-line-wrapper {
                 display: flex; align-items: center; gap: 4px; width: 100%;
             }
             .email-addr-text {
-                display: block; flex: 1; min-width: 0;
+                display: block; flex: 0 1 auto; min-width: 0;
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
                 font-size: 0.875rem; font-weight: 500; color: #0f172a;
             }
@@ -846,8 +853,8 @@
                 hintDiv.appendChild(dismissBtn);
                 emailCell.appendChild(hintDiv);
 
-                // ── Mobile: AI buttons live inside the action cell (above the select) ──
-                // The email-cell hintDiv is hidden via CSS on mobile.
+                // ── Mobile: AI row lives inside the action cell (above the select) ──
+                // Structure: [hint text] then [Apply AI] [✕ Dismiss] buttons
                 const mobileAiRow = document.createElement('div');
                 mobileAiRow.className = 'mobile-ai-row';
                 mobileAiRow.setAttribute('data-ai-email', row.email);
@@ -855,20 +862,40 @@
                 if (suggestion.action === 'no_label') {
                     const warn = document.createElement('span');
                     warn.className = 'ai-no-label-warning';
-                    warn.innerHTML = '<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> Not recommended.';
+                    warn.innerHTML = '<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> Applying a label not recommended.';
                     mobileAiRow.appendChild(warn);
+
+                    const mobDismiss = document.createElement('button');
+                    mobDismiss.className = 'btn-ai-dismiss';
+                    mobDismiss.textContent = '✕ Dismiss';
+                    mobDismiss.onclick = () => dismissAISuggestion(row.email);
+                    mobileAiRow.appendChild(mobDismiss);
                 } else {
+                    // Recommendation text
+                    const verb = suggestion.action === 'use_existing' ? 'Existing label' : 'Creating label';
+                    const mobileHint = document.createElement('span');
+                    mobileHint.className = 'ai-hint-text';
+                    mobileHint.innerHTML = `${verb} <strong>${escapeHtml(suggestion.label)}</strong> recommended.`;
+                    mobileAiRow.appendChild(mobileHint);
+
+                    // Buttons row
+                    const btns = document.createElement('div');
+                    btns.className = 'mobile-ai-buttons';
+
                     const mobApply = document.createElement('button');
                     mobApply.className = 'btn-ai-apply';
                     mobApply.textContent = 'Apply AI';
                     mobApply.onclick = () => applyAISuggestion(row.email);
-                    mobileAiRow.appendChild(mobApply);
+                    btns.appendChild(mobApply);
+
+                    const mobDismiss = document.createElement('button');
+                    mobDismiss.className = 'btn-ai-dismiss';
+                    mobDismiss.textContent = '✕ Dismiss';
+                    mobDismiss.onclick = () => dismissAISuggestion(row.email);
+                    btns.appendChild(mobDismiss);
+
+                    mobileAiRow.appendChild(btns);
                 }
-                const mobDismiss = document.createElement('button');
-                mobDismiss.className = 'btn-ai-dismiss';
-                mobDismiss.textContent = '✕ Dismiss';
-                mobDismiss.onclick = () => dismissAISuggestion(row.email);
-                mobileAiRow.appendChild(mobDismiss);
 
                 actionCell.insertBefore(mobileAiRow, actionCell.firstChild);
             }

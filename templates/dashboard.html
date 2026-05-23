@@ -65,7 +65,7 @@
         
         .table-custom th { background-color: #f8fafc; color: #64748b; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; padding: 16px; border-bottom: 1px solid #e2e8f0; }
         .table-custom td { vertical-align: middle; padding: 16px; border-bottom: 1px solid #f1f5f9; color: #334155; }
-        .table-custom tr:hover td { background-color: #f8fafc; }
+        /* hover handled by UX Epic block below */
         .table-custom .email-text { font-weight: 500; color: #0f172a; }
         .count-badge { background-color: #dbeafe; color: #1e40af; padding: 6px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: 600; display: inline-block; min-width: 40px; text-align: center; }
 
@@ -177,6 +177,56 @@
 
         /* AI bulk buttons (shown in action-buttons area when suggestions are loaded) */
         .btn-ai-bulk { border-radius: 20px; padding: 6px 14px; font-size: 0.9rem; font-weight: 500; }
+
+        /* ── UX Epic: Table row separation ── */
+        .table-custom tbody tr:nth-child(even) td { background-color: #f8fafc; }
+        .table-custom tbody tr:hover td { background-color: #dbeafe !important; transition: background-color 0.1s ease; }
+        /* AI-applied rows win over zebra, but yield to hover */
+        .row-ai-applied td { background-color: #eff6ff !important; }
+        /* Action column subtle left border for visual grouping */
+        .table-custom td:last-child { border-left: 1px solid #f1f5f9; }
+        .table-custom th:last-child { border-left: 1px solid #e2e8f0; }
+
+        /* ── UX Epic: Selection counter badge ── */
+        .selection-badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            background: #eff6ff; color: #1d4ed8;
+            border: 1px solid #bfdbfe; border-radius: 20px;
+            padding: 4px 12px; font-size: 0.85rem; font-weight: 600;
+            white-space: nowrap;
+        }
+        .btn-deselect-all {
+            background: none; border: none; padding: 2px 8px;
+            color: #94a3b8; font-size: 0.8rem; cursor: pointer;
+            border-radius: 12px; transition: color 0.15s, background 0.15s;
+        }
+        .btn-deselect-all:hover { color: #475569; background: #f1f5f9; }
+
+        /* ── UX Epic: Contextual sub-header ── */
+        .scan-subheader {
+            padding: 7px 20px;
+            border-bottom: 1px solid #f1f5f9;
+            background: #fafbfc;
+            font-size: 0.78rem;
+            color: #64748b;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        /* ── UX Epic: AI info icon + tooltip ── */
+        .ai-info-btn {
+            background: none; border: none; padding: 0 2px;
+            cursor: pointer; color: #93c5fd; font-size: 0.7rem;
+            vertical-align: middle; line-height: 1; border-radius: 50%;
+            transition: color 0.15s;
+            tabindex: 0;
+        }
+        .ai-info-btn:hover, .ai-info-btn:focus { color: #3b82f6; outline: 2px solid #bfdbfe; outline-offset: 1px; }
+
+        /* ── UX Epic: No-label warning (WCAG AA contrast) ── */
+        .ai-no-label-warning { color: #C2410C; display: inline-flex; align-items: center; gap: 4px; }
     </style>
 </head>
 <body>
@@ -227,7 +277,8 @@
                     </div>
 
                     <div id="bulk-actions-container" class="bulk-actions-group">
-                        <span id="selection-count" class="text-primary fw-bold small me-2">0 Selected</span>
+                        <span id="selection-count" class="selection-badge">0 Selected</span>
+                        <button class="btn-deselect-all" onclick="deselectAll()">✕ Deselect All</button>
                         <button class="btn btn-bulk-delete" onclick="applyBulkRowAction('delete')">
                             <i class="bi bi-trash me-1"></i> Delete Selected
                         </button>
@@ -243,14 +294,14 @@
                 <div class="action-buttons d-flex align-items-center">
                     <!-- AI bulk controls — shown once suggestions are loaded -->
                     <div id="ai-bulk-controls" class="d-none d-flex align-items-center gap-2 me-2">
-                        <button class="btn btn-outline-secondary btn-ai-bulk" onclick="dismissAllAI()">
+                        <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small" onclick="dismissAllAI()">
                             Dismiss AI
                         </button>
-                        <button class="btn btn-outline-primary btn-ai-bulk fw-bold" onclick="applyAllAI()">
+                        <button class="btn btn-outline-secondary rounded-pill px-3 py-2 small fw-bold" onclick="applyAllAI()">
                             Apply AI
                         </button>
                     </div>
-                    <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small me-2" onclick="window.location.reload()">
+                    <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small me-2" onclick="window.location.reload()" title="Reload">
                         <i class="bi bi-arrow-clockwise"></i>
                     </button>
                     <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small me-2" onclick="downloadCSV()">
@@ -263,6 +314,10 @@
                         Apply Actions
                     </button>
                 </div>
+            </div>
+
+            <div id="scan-subheader" class="scan-subheader" style="display:none;">
+                <span id="scan-subheader-text"></span>
             </div>
 
             <div class="table-responsive">
@@ -485,11 +540,25 @@
                 dismissBtn.onclick = () => dismissAISuggestion(row.email);
 
                 if (suggestion.action === 'no_label') {
-                    hintText.innerHTML = `<span style="color:#92400e;">Applying a label not recommended.</span>`;
+                    hintText.innerHTML = `<span class="ai-no-label-warning"><i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> Applying a label not recommended.</span>`;
                     hintDiv.appendChild(hintText);
                 } else {
                     const verb = suggestion.action === 'use_existing' ? 'Existing label' : 'Creating label';
+                    const tooltipText = suggestion.action === 'use_existing'
+                        ? `Label "${escapeHtml(suggestion.label)}" already exists in your Gmail — emails will be organised under it.`
+                        : `A new label "${escapeHtml(suggestion.label)}" will be created${suggestion.parent ? ` under "${escapeHtml(suggestion.parent)}"` : ''}.`;
+
                     hintText.innerHTML = `${verb} <strong>${escapeHtml(suggestion.label)}</strong> recommended.`;
+
+                    // Info icon with Bootstrap tooltip for context
+                    const infoBtn = document.createElement('button');
+                    infoBtn.className = 'ai-info-btn';
+                    infoBtn.setAttribute('tabindex', '0');
+                    infoBtn.setAttribute('aria-label', 'More info about this suggestion');
+                    infoBtn.setAttribute('data-bs-toggle', 'tooltip');
+                    infoBtn.setAttribute('data-bs-placement', 'top');
+                    infoBtn.setAttribute('title', tooltipText);
+                    infoBtn.innerHTML = '<i class="bi bi-info-circle" aria-hidden="true"></i>';
 
                     const applyBtn = document.createElement('button');
                     applyBtn.className = 'btn-ai-apply';
@@ -497,6 +566,7 @@
                     applyBtn.onclick = () => applyAISuggestion(row.email);
 
                     hintDiv.appendChild(hintText);
+                    hintDiv.appendChild(infoBtn);
                     hintDiv.appendChild(applyBtn);
                 }
 
@@ -512,6 +582,10 @@
         document.getElementById('page-info').innerText = `${start + 1}-${Math.min(end, filteredData.length)} of ${filteredData.length}`;
         document.getElementById('pagination-controls').style.setProperty('display', 'flex', 'important');
         updateSelection();
+        // Initialise Bootstrap tooltips for AI info icons
+        document.querySelectorAll('.ai-info-btn[data-bs-toggle="tooltip"]').forEach(el => {
+            if (!bootstrap.Tooltip.getInstance(el)) new bootstrap.Tooltip(el, { trigger: 'hover focus', html: false });
+        });
     }
 
     function changeRowsPerPage() { rowsPerPage = parseInt(document.getElementById('rowsPerPage').value); currentPage = 1; renderTable(); }
@@ -524,7 +598,22 @@
         const term = document.getElementById('searchInput').value.toLowerCase();
         filteredData = allData.filter(row => row.email.includes(term));
         currentPage = 1;
+        updateSubheader();
         renderTable();
+    }
+
+    function updateSubheader() {
+        const subheaderText = document.getElementById('scan-subheader-text');
+        if (!subheaderText) return;
+        const uniqueSenders = filteredData.length;
+        const totalEmails = filteredData.reduce((sum, item) => sum + item.count, 0);
+        const allTotal = allData.reduce((sum, item) => sum + item.count, 0);
+        const allSenders = allData.length;
+        if (uniqueSenders < allSenders) {
+            subheaderText.textContent = `Showing ${uniqueSenders.toLocaleString()} sender${uniqueSenders !== 1 ? 's' : ''} (${totalEmails.toLocaleString()} emails) — filtered from ${allSenders.toLocaleString()} unique senders across ${allTotal.toLocaleString()} total emails`;
+        } else {
+            subheaderText.textContent = `Grouped by ${allSenders.toLocaleString()} unique sender${allSenders !== 1 ? 's' : ''} across ${allTotal.toLocaleString()} total email${allTotal !== 1 ? 's' : ''}`;
+        }
     }
 
     function toggleSelectAll() {
@@ -538,15 +627,25 @@
         const bulkContainer = document.getElementById('bulk-actions-container');
         const searchContainer = document.getElementById('search-container');
         const indicator = document.getElementById('selection-count');
-        
+
         if (count > 0) {
             searchContainer.style.display = 'none';
             bulkContainer.style.display = 'flex';
-            indicator.innerText = `${count} Selected`;
+            indicator.textContent = `${count} item${count !== 1 ? 's' : ''} selected`;
         } else {
             bulkContainer.style.display = 'none';
             searchContainer.style.display = 'block';
+            // Reset select-all checkbox if nothing is checked
+            const selectAll = document.getElementById('selectAll');
+            if (selectAll) selectAll.checked = false;
         }
+    }
+
+    function deselectAll() {
+        document.querySelectorAll('.row-checkbox:checked').forEach(cb => cb.checked = false);
+        const selectAll = document.getElementById('selectAll');
+        if (selectAll) selectAll.checked = false;
+        updateSelection();
     }
 
     function populateBulkDropdown() {
@@ -737,6 +836,7 @@
                 const resultData = await resultsRes.json();
                 allData = resultData;
                 const totalEmails = allData.reduce((sum, item) => sum + item.count, 0);
+                const uniqueSenders = allData.length;
                 currentInboxCount = totalEmails;
                 sessionOrganizedCount = 0;
                 aiAppliedRows = new Set();
@@ -744,6 +844,13 @@
                     <h1 class="hero-title" style="margin-top: 10px;">You have <span class="hero-count" id="inbox-count-display">${totalEmails.toLocaleString()} emails</span> in your inbox.</h1>
                     <p id="organized-summary" style="display:none; margin-top:10px; font-size:1rem; color:#475569; margin-bottom:0;">You successfully organized <span id="organized-count-display" style="color:#1DB954; font-weight:700;"></span>.</p>
                 `;
+                // Update contextual sub-header
+                const subheader = document.getElementById('scan-subheader');
+                const subheaderText = document.getElementById('scan-subheader-text');
+                if (subheader && subheaderText) {
+                    subheaderText.textContent = `Grouped by ${uniqueSenders.toLocaleString()} unique sender${uniqueSenders !== 1 ? 's' : ''} across ${totalEmails.toLocaleString()} total email${totalEmails !== 1 ? 's' : ''}`;
+                    subheader.style.display = 'flex';
+                }
                 filteredData = allData;
                 renderTable();
 

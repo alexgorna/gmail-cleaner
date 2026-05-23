@@ -22,9 +22,9 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_key_for_testing_only')
 
 # --- CONFIGURATION & CONSTANTS ---
-BATCH_SIZE = 18
-BATCH_SLEEP_SECONDS = 0.2
-MAX_RETRIES = 5
+BATCH_SIZE = 500          # Gmail batchModify supports up to 1000; 500 is safe
+BATCH_SLEEP_SECONDS = 0   # No sleep needed with larger batches
+MAX_RETRIES = 3           # Fail faster; smart backoff handles rate limits
 MAX_MESSAGES_PER_PAGE = 500
 
 if os.environ.get('ENVIRONMENT') != 'production':
@@ -81,7 +81,7 @@ def get_creds():
 def get_service():
     creds = get_creds()
     if not creds: return None
-    http = httplib2.Http(timeout=30)
+    http = httplib2.Http(timeout=10)  # 30s was too long; 10s fails fast so retries kick in sooner
     authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
     return build('gmail', 'v1', http=authorized_http)
 
@@ -310,9 +310,17 @@ def apply_actions():
 
         def execute_with_retry(req):
             for attempt in range(MAX_RETRIES):
-                try: return req.execute()
-                except: time.sleep(1 + attempt)
-            raise Exception("Failed")
+                try:
+                    return req.execute()
+                except HttpError as e:
+                    # Only retry on rate limit / server errors; fail fast on client errors
+                    if e.resp.status in (429, 500, 503):
+                        time.sleep(min(2 ** attempt, 8))  # 1s, 2s, 4s max
+                    else:
+                        raise  # 400, 401, 403 etc. — no point retrying
+                except Exception:
+                    time.sleep(min(2 ** attempt, 8))
+            raise Exception(f"Gmail API call failed after {MAX_RETRIES} retries")
 
         yield json.dumps({"msg": "Starting actions..."}) + "\n"
 
@@ -333,11 +341,12 @@ def apply_actions():
 
                     if msgs:
                         all_ids = [m['id'] for m in msgs]
-                        for i in range(0, len(all_ids), BATCH_SIZE):
-                            ids = all_ids[i:i + BATCH_SIZE]
+                        batches = [all_ids[i:i + BATCH_SIZE] for i in range(0, len(all_ids), BATCH_SIZE)]
+                        for idx, ids in enumerate(batches):
                             try: execute_with_retry(service.users().messages().batchModify(userId='me', body={'ids': ids, 'addLabelIds': ['TRASH']}))
                             except: pass
-                            time.sleep(BATCH_SLEEP_SECONDS)
+                            if BATCH_SLEEP_SECONDS and idx < len(batches) - 1:
+                                time.sleep(BATCH_SLEEP_SECONDS)
 
                     yield json.dumps({"status": "row_complete", "email": email, "action": "delete", "msg": "  - Emails deleted."}) + "\n"
 
@@ -367,11 +376,12 @@ def apply_actions():
                         modify_body = {'addLabelIds': [label_id]}
                         if skip_inbox:
                             modify_body['removeLabelIds'] = ['INBOX']
-                        for i in range(0, len(all_ids), BATCH_SIZE):
-                            ids = all_ids[i:i + BATCH_SIZE]
+                        batches = [all_ids[i:i + BATCH_SIZE] for i in range(0, len(all_ids), BATCH_SIZE)]
+                        for idx, ids in enumerate(batches):
                             try: execute_with_retry(service.users().messages().batchModify(userId='me', body={**modify_body, 'ids': ids}))
                             except: pass
-                            time.sleep(BATCH_SLEEP_SECONDS)
+                            if BATCH_SLEEP_SECONDS and idx < len(batches) - 1:
+                                time.sleep(BATCH_SLEEP_SECONDS)
 
                     yield json.dumps({"status": "row_complete", "email": email, "action": f"label:{label_id}", "msg": f"  - Labelled {len(msgs)} emails."}) + "\n"
             except Exception as e:

@@ -276,98 +276,139 @@
         .mobile-tooltip-close:active { background: #e2e8f0; }
 
         @media (max-width: 768px) {
-            /* ── Card Stack: convert table rows to CSS Grid cards ── */
+            /* ── Card Stack: collapsed by default, tap-to-expand ── */
             .table-custom thead { display: none; }
             .table-custom tbody { display: block; padding: 8px; }
+
+            /* Default: single-row collapsed card */
             .table-custom tr {
                 display: grid !important;
                 grid-template-columns: 48px 1fr auto;
-                grid-template-areas: "check email count" "check action action";
+                grid-template-areas: "check email count";
+                grid-template-rows: auto;
                 border: 1px solid #e2e8f0 !important;
                 border-radius: 12px !important;
                 margin-bottom: 8px !important;
                 background: white !important;
                 overflow: hidden;
+                cursor: pointer;
+                transition: box-shadow 0.15s ease;
             }
-            /* Loading / empty-state rows have colspan="4" — exempt from grid */
+            .table-custom tr:active { box-shadow: 0 0 0 2px #bfdbfe; }
+
+            /* Expanded: reveal action row beneath */
+            .table-custom tr.card-expanded {
+                grid-template-areas: "check email count" ". action action" !important;
+                grid-template-rows: auto auto;
+                border-color: #93c5fd !important;
+                box-shadow: 0 2px 8px rgba(59,130,246,0.12) !important;
+            }
+
+            /* Loading / empty rows (colspan) — exempt from grid */
             .table-custom tbody tr:has(td[colspan]) {
                 display: block !important;
+                cursor: default;
                 border-radius: 8px !important;
+                box-shadow: none !important;
             }
             .table-custom tbody tr:has(td[colspan]) td {
                 display: block !important;
                 text-align: center !important;
                 padding: 40px 16px !important;
             }
-            /* Card zebra — apply on the tr, not td */
+
+            /* Card zebra on tr; clear td-level zebra from UX Epic */
             .table-custom tbody tr:nth-child(even) { background: #f8fafc !important; }
-            /* Clear td-level zebra overrides from UX epic (not needed on mobile) */
             .table-custom tbody tr:nth-child(even) td { background-color: transparent !important; }
             .table-custom tbody tr:nth-child(odd) td { background-color: transparent !important; }
-            /* Touch press feedback */
-            .table-custom tbody tr:active { background: #f0f9ff !important; }
-            .table-custom tbody tr:active td { background-color: transparent !important; }
 
-            /* Remove cell-level borders on mobile */
+            /* Remove td borders on mobile */
             .table-custom td { border-bottom: none !important; border-left: none !important; }
 
-            /* Grid area assignments: td order is checkbox, email, count, action */
+            /* Checkbox cell: tap = select (not expand) */
             .table-custom td:nth-child(1) {
                 grid-area: check;
                 display: flex; align-items: center; justify-content: center;
                 padding: 14px 4px !important;
+                cursor: default;
             }
+            /* Email cell */
             .table-custom td:nth-child(2) {
                 grid-area: email;
-                padding: 12px 8px 6px 0 !important;
+                padding: 13px 8px 13px 0 !important;
+                display: flex; flex-direction: column; justify-content: center;
             }
+            /* Count cell */
             .table-custom td:nth-child(3) {
                 grid-area: count;
                 display: flex !important;
                 align-items: center; justify-content: center;
-                padding: 12px 12px 6px 4px !important;
+                padding: 13px 12px 13px 4px !important;
             }
+            /* Action cell: hidden collapsed, shown expanded */
             .table-custom td:nth-child(4) {
                 grid-area: action;
-                padding: 6px 12px 12px 0 !important;
-                border-top: 1px solid #f1f5f9 !important;
+                display: none !important;
+                padding: 10px 12px 14px 0 !important;
+                border-top: 1px solid #e2e8f0 !important;
                 text-align: left !important;
+                cursor: default;
             }
+            .table-custom tr.card-expanded td:nth-child(4) { display: block !important; }
 
-            /* Checkbox — 20×20, with 44px cell for touch */
+            /* AI hint: hidden collapsed, shown expanded */
+            .table-custom .ai-hint { display: none !important; }
+            .table-custom tr.card-expanded .ai-hint { display: flex !important; margin-top: 8px; }
+
+            /* Email line wrapper */
+            .email-line-wrapper {
+                display: flex; align-items: center; gap: 4px; width: 100%;
+            }
+            .email-addr-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.875rem; font-weight: 500; color: #0f172a; }
+
+            /* AI chip: shows in collapsed mode, hides when expanded */
+            .mobile-ai-chip {
+                display: inline-flex; align-items: center; gap: 2px;
+                background: #eff6ff; color: #1d4ed8;
+                border: 1px solid #bfdbfe; border-radius: 10px;
+                font-size: 0.65rem; font-weight: 700;
+                padding: 2px 7px; white-space: nowrap; flex-shrink: 0;
+            }
+            .table-custom tr.card-expanded .mobile-ai-chip { display: none; }
+
+            /* Expand/collapse chevron */
+            .mobile-expand-chevron {
+                color: #94a3b8; font-size: 0.7rem; flex-shrink: 0;
+                transition: transform 0.2s ease, color 0.15s;
+            }
+            .table-custom tr.card-expanded .mobile-expand-chevron { transform: rotate(180deg); color: #3b82f6; }
+
+            /* Checkbox 20×20 */
             .table-custom td:nth-child(1) .form-check-input { width: 20px; height: 20px; cursor: pointer; }
 
             /* Count badge compact */
             .table-custom td:nth-child(3) .count-badge { padding: 4px 10px; font-size: 0.78rem; min-width: 28px; }
 
-            /* Action select fills card width */
+            /* Action select and label options fill card */
             .action-select { max-width: 100% !important; width: 100% !important; }
-
-            /* Label options align left on mobile */
             .label-options { justify-content: flex-start !important; }
 
-            /* AI-applied card highlight */
+            /* AI-applied highlight */
             .row-ai-applied { border-left: 3px solid #3b82f6 !important; }
 
-            /* Hide desktop bulk bar — bottom sheet handles it on mobile */
+            /* Hide desktop bulk bar */
             #bulk-actions-container { display: none !important; }
 
-            /* AI hint touch targets */
-            .btn-ai-apply { min-height: 34px; padding: 6px 14px; font-size: 0.78rem; }
-            .btn-ai-dismiss { min-height: 34px; padding: 6px 10px; font-size: 0.78rem; }
-
-            /* AI info button — bigger tap target */
-            .ai-info-btn {
-                min-width: 34px; min-height: 34px;
-                display: inline-flex; align-items: center; justify-content: center;
-                font-size: 0.85rem;
-            }
-
-            /* Touch active states */
+            /* AI hint buttons — full 44px touch targets */
+            .btn-ai-apply { min-height: 44px; padding: 10px 20px; font-size: 0.875rem; border-radius: 22px; }
+            .btn-ai-dismiss { min-height: 44px; padding: 10px 16px; font-size: 0.875rem; border-radius: 22px; }
             .btn-ai-apply:active { background: #dbeafe; }
             .btn-ai-dismiss:active { background: #e2e8f0; }
 
-            /* Compact sub-header on mobile */
+            /* AI info button */
+            .ai-info-btn { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; font-size: 0.9rem; }
+
+            /* Compact sub-header */
             .scan-subheader { padding: 6px 12px; font-size: 0.75rem; }
         }
     </style>
@@ -684,9 +725,15 @@
             
             const emailCell = tr.querySelector('.email-text');
 
-            // Line 1: email address + Gmail link
-            const emailLine = document.createElement('span');
-            emailLine.appendChild(document.createTextNode(row.email));
+            // Line 1: email address + Gmail link + (mobile) AI chip + chevron
+            const emailLine = document.createElement('div');
+            emailLine.className = 'email-line-wrapper';
+
+            const emailAddrText = document.createElement('span');
+            emailAddrText.className = 'email-addr-text';
+            emailAddrText.textContent = row.email;
+            emailLine.appendChild(emailAddrText);
+
             const gmailLink = document.createElement('a');
             gmailLink.href = `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(row.email)}`;
             gmailLink.target = '_blank';
@@ -695,7 +742,33 @@
             gmailLink.className = 'gmail-search-link';
             gmailLink.innerHTML = `<i class="bi bi-box-arrow-up-right"></i>`;
             emailLine.appendChild(gmailLink);
+
+            // Mobile AI chip — indicates pending suggestion when card is collapsed
+            const hasSuggestion = !row.processedAction && aiSuggestions[row.email];
+            if (hasSuggestion && aiSuggestions[row.email].action !== 'no_label') {
+                const chip = document.createElement('span');
+                chip.className = 'mobile-ai-chip';
+                chip.innerHTML = '<i class="bi bi-stars"></i> AI';
+                emailLine.appendChild(chip);
+            }
+
+            // Chevron: visible on mobile only (CSS hides on desktop)
+            const chevron = document.createElement('i');
+            chevron.className = 'bi bi-chevron-down mobile-expand-chevron';
+            chevron.setAttribute('aria-hidden', 'true');
+            emailLine.appendChild(chevron);
+
             emailCell.appendChild(emailLine);
+
+            // Tap-to-expand: clicking email or count cell toggles card-expanded
+            // Checkbox cell and action cell are excluded (cursor:default + stopProp below)
+            const checkboxCell = tr.querySelector('td:nth-child(1)');
+            const actionCell = tr.querySelector('td:nth-child(4)');
+            tr.addEventListener('click', (e) => {
+                if (checkboxCell.contains(e.target) || actionCell.contains(e.target)) return;
+                if (e.target.tagName === 'A') return; // gmail link
+                tr.classList.toggle('card-expanded');
+            });
 
             // Line 2: AI suggestion hint (only if suggestion exists and row not processed)
             const suggestion = !row.processedAction && aiSuggestions[row.email];

@@ -525,3 +525,94 @@ The `.row-ai-applied` rule was moved from TR-level to TD-level so it wins over z
 ---
 
 **All 6 items committed and pushed in one epic commit.** Railway auto-deploys on push to `main`.
+
+---
+
+### 25. Mobile Responsive Epic — Designer Report (412×915 viewport)
+
+**Commit:** `4ff5b5b` — *"Mobile Responsive Epic: card stack, bottom sheet, tooltip overlay, touch targets, compact sub-header"*
+
+**Context:** The web designer evaluated the app at 412×915 (Pixel 6 / Galaxy S22 equivalent) and filed a mobile UX report with 2 HIGH priority items, 2 MEDIUM, 1 LOW, and an A11Y section. All items were implemented in a single epic commit to `templates/dashboard.html`.
+
+---
+
+#### HIGH-1 — Card Stack View (Table → Cards)
+
+**Problem:** The HTML `<table>` rendered with horizontal scroll on narrow viewports, making senders and actions hard to read and tap.
+
+**Fix — CSS Grid card layout at ≤768px:**
+- `thead { display: none }` — column headers hidden on mobile
+- Each `tbody tr` becomes a `display: grid !important` card with:
+  ```
+  grid-template-areas: "check email count"
+                        "check action action"
+  grid-template-columns: 48px 1fr auto
+  ```
+- Cards get `border: 1px solid #e2e8f0`, `border-radius: 12px`, `margin-bottom: 8px`, `background: white`
+- Zebra striping moved from td-level (UX Epic) to tr-level on mobile (`tr:nth-child(even) { background: #f8fafc !important; }`) — td backgrounds set to `transparent` to avoid conflict
+- Action column (`td:nth-child(4)`) spans full width, has a subtle top border as a divider
+- `action-select` expands to `width: 100%` inside the card
+
+---
+
+#### HIGH-2 — Touch Targets ≥ 44px
+
+**Problem:** Several controls were too small for reliable touch (checkbox 13px, AI hint buttons ~28px tall, info icon ~16px).
+
+**Fix:**
+- Checkbox `td` is 48px wide; `form-check-input` set to `width: 20px; height: 20px`
+- `btn-ai-apply` and `btn-ai-dismiss` both set to `min-height: 34px`
+- `.ai-info-btn` on mobile: `min-width: 34px; min-height: 34px; display: inline-flex; align-items: center; justify-content: center`
+- All pagination buttons already ≥ 44px from earlier work
+
+---
+
+#### MEDIUM-1 — Sticky Footer / Bottom Sheet for Bulk Actions
+
+**Problem:** The desktop bulk-actions bar (in the controls row) disappeared into the page on mobile — no sticky affordance for selection feedback.
+
+**Fix:**
+- Added `#mobile-bottom-sheet` fixed to `bottom: 0`, full width, `border-radius: 16px 16px 0 0`
+- Hidden by default via `transform: translateY(110%)`; shown with `.visible` class → `translateY(0)`, animated with `cubic-bezier(0.4, 0, 0.2, 1)` transition
+- Contents: selected count badge, Deselect All, Delete button, Clear button, label `<select>` (mirrors labels from `populateBulkDropdown()`)
+- Desktop `#bulk-actions-container` hidden on mobile via `display: none !important`
+- `updateSelection()` adds/removes `.visible` class and updates count text
+- `populateBulkDropdown()` also populates `#mobile-sheet-label-select` with the same label list
+- `applyMobileSheetLabel(select)` — helper to route label selection or "Create New Label" from the sheet
+
+---
+
+#### MEDIUM-2 — Compact Sub-Header on Mobile
+
+**Problem:** The contextual sub-header sentence was too long for 412px (e.g. *"Grouped by 744 unique senders across 1,561 total emails"*).
+
+**Fix:** `updateSubheader()` now checks `window.innerWidth <= 768`:
+- Mobile format: `"744 senders, 1,561 emails total"` / `"12 senders, 38 emails (filtered)"`
+- Desktop format: unchanged long form
+- A `resize` event listener re-runs `updateSubheader()` so the text updates if the user rotates their device
+
+---
+
+#### A11Y — Mobile Tooltip Replacement
+
+**Problem:** Bootstrap tooltips use `hover` and `focus` triggers. On touch-only devices, `hover` never fires — tapping the ⓘ info icon did nothing.
+
+**Fix:**
+- `infoBtn` gets a `data-tooltip-text` attribute during `renderTable()`
+- A `click` event listener detects touch devices (`'ontouchstart' in window || navigator.maxTouchPoints > 0`)
+- On touch tap: `showMobileTooltip(text)` populates `#mobile-tooltip-overlay` with the tooltip text and makes it visible
+- The overlay is a full-screen semi-opaque backdrop with a centred white card, a text paragraph, and a "Close" button
+- `closeMobileTooltip()` removes the `.visible` class; tapping outside the box also closes it
+- Bootstrap tooltip still fires normally on desktop (hover/focus) — no regression
+
+---
+
+#### Touch Feedback
+
+- `tr:active { background: #f0f9ff !important }` with `td { background-color: transparent !important }` for press state on card rows
+- `btn-ai-apply:active { background: #dbeafe }`
+- `btn-ai-dismiss:active { background: #e2e8f0 }`
+
+---
+
+**Files changed:** `templates/dashboard.html` only. Commit pushed; Railway auto-deploys on push to `main`.

@@ -289,6 +289,16 @@
                 background: white !important;
                 overflow: hidden;
             }
+            /* Loading / empty-state rows have colspan="4" — exempt from grid */
+            .table-custom tbody tr:has(td[colspan]) {
+                display: block !important;
+                border-radius: 8px !important;
+            }
+            .table-custom tbody tr:has(td[colspan]) td {
+                display: block !important;
+                text-align: center !important;
+                padding: 40px 16px !important;
+            }
             /* Card zebra — apply on the tr, not td */
             .table-custom tbody tr:nth-child(even) { background: #f8fafc !important; }
             /* Clear td-level zebra overrides from UX epic (not needed on mobile) */

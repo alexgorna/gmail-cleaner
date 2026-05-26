@@ -362,7 +362,7 @@ def apply_actions():
                             except: pass
 
                     return {"status": "row_complete", "email": email, "action": "delete",
-                            "msg": f"  - {len(msgs)} emails deleted."}
+                            "msg": f"  - {email}: {len(msgs)} emails deleted."}
 
                 elif action_type == 'label':
                     label_id = item['labelId']
@@ -401,15 +401,15 @@ def apply_actions():
 
                     return {"status": "row_complete", "email": email,
                             "action": f"label:{label_id}",
-                            "msg": f"  - Labelled {len(msgs)} emails."}
+                            "msg": f"  - {email}: labelled {len(msgs)} emails."}
 
                 else:
                     return {"status": "row_complete", "email": email,
-                            "action": action_type, "msg": "  - Skipped."}
+                            "action": action_type, "msg": f"  - {email}: skipped."}
 
             except Exception as e:
                 return {"status": "row_complete", "email": email,
-                        "action": "error", "msg": f"  - Error: {str(e)}"}
+                        "action": "error", "msg": f"  - {email}: error — {str(e)}"}
 
         yield json.dumps({"msg": f"Starting {len(actions)} actions ({PARALLEL_WORKERS} parallel)..."}) + "\n"
 

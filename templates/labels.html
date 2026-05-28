@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Label Manager — Gmail Cleaner</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+  <style>
+    :root { --blue: #3b82f6; --blue-light: #eff6ff; --blue-mid: #bfdbfe; --purple: #6d28d9; --purple-light: #f5f3ff; }
+    * { box-sizing: border-box; }
+    body { background: #f8fafc; font-family: 'Inter', system-ui, sans-serif; font-size: 14px; color: #0f172a; margin: 0; overflow: hidden; }
+
+    /* ── Nav ── */
+    .app-nav { background: white; border-bottom: 1px solid #e2e8f0; padding: 0 20px; height: 52px; display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 100; }
+    .back-link { color: #64748b; text-decoration: none; font-size: 13px; display: flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 6px; }
+    .back-link:hover { background: #f1f5f9; color: #0f172a; }
+    .nav-divider { width: 1px; height: 20px; background: #e2e8f0; }
+    .nav-title { font-weight: 600; font-size: 15px; color: #0f172a; }
+    .nav-badge { background: #e2e8f0; color: #475569; font-size: 12px; font-weight: 500; padding: 2px 9px; border-radius: 20px; }
+    .nav-right { margin-left: auto; display: flex; gap: 8px; }
+    .btn-nav { border: 1px solid #e2e8f0; background: white; color: #475569; border-radius: 8px; padding: 6px 13px; font-size: 13px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+    .btn-nav:hover { background: #f8fafc; border-color: #cbd5e1; }
+    .btn-nav-ai { border-color: #c4b5fd; background: var(--purple-light); color: var(--purple); }
+    .btn-nav-ai:hover { background: #ede9fe; }
+
+    /* ── Stats bar ── */
+    .stats-bar { background: white; border-bottom: 1px solid #e2e8f0; padding: 0 20px; height: 44px; display: flex; align-items: center; gap: 28px; }
+    .stat-item { display: flex; align-items: baseline; gap: 6px; }
+    .stat-val { font-size: 16px; font-weight: 600; color: #0f172a; }
+    .stat-lbl { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
+
+    /* ── Layout ── */
+    .main-layout { display: flex; height: calc(100vh - 96px); overflow: hidden; }
+
+    /* ── Tree panel ── */
+    .tree-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: white; }
+    .tree-toolbar { padding: 10px 14px; border-bottom: 1px solid #f1f5f9; display: flex; gap: 8px; flex-shrink: 0; }
+    .search-input { flex: 1; border: 1px solid #e2e8f0; border-radius: 8px; padding: 6px 12px 6px 34px; font-size: 13px; outline: none; background: #f8fafc url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' fill='%2394a3b8' viewBox='0 0 16 16'%3E%3Cpath d='M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z'/%3E%3C/svg%3E") no-repeat 10px center; }
+    .search-input:focus { border-color: var(--blue); background-color: white; }
+    .tree-scroll { flex: 1; overflow-y: auto; }
+
+    /* ── Tree items ── */
+    .tree-item { display: flex; align-items: center; height: 36px; padding: 0 10px; cursor: pointer; position: relative; border-radius: 0; }
+    .tree-item:hover { background: #f8fafc; }
+    .tree-indent { flex-shrink: 0; }
+    .toggle-btn { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; color: #94a3b8; font-size: 10px; flex-shrink: 0; border: none; background: transparent; cursor: pointer; border-radius: 4px; padding: 0; }
+    .toggle-btn:hover { background: #e2e8f0; color: #475569; }
+    .tree-icon { font-size: 14px; margin-right: 7px; flex-shrink: 0; }
+    .tree-name-span { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .tree-msg-count { font-size: 11px; color: #94a3b8; margin-right: 6px; flex-shrink: 0; white-space: nowrap; }
+    .tree-actions { display: none; gap: 2px; flex-shrink: 0; }
+    .tree-item:hover .tree-actions { display: flex; }
+    .tree-action-btn { width: 26px; height: 26px; border-radius: 6px; border: none; background: transparent; color: #94a3b8; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 13px; padding: 0; flex-shrink: 0; }
+    .tree-action-btn:hover { background: #e2e8f0; color: #475569; }
+    .tree-action-btn.danger:hover { background: #fee2e2; color: #dc2626; }
+    .rename-input { flex: 1; border: 1px solid var(--blue); border-radius: 5px; padding: 3px 7px; font-size: 13px; outline: none; min-width: 0; }
+    .tree-separator { height: 1px; background: #f1f5f9; margin: 3px 10px; }
+
+    /* ── AI Panel ── */
+    .ai-panel { width: 0; flex-shrink: 0; border-left: 0 solid #e2e8f0; display: flex; flex-direction: column; background: white; overflow: hidden; transition: width 0.22s ease, border-width 0.22s ease; }
+    .ai-panel.open { width: 390px; border-left-width: 1px; }
+    .ai-panel-inner { width: 390px; display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+    .ai-panel-header { padding: 13px 16px; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .ai-panel-title { font-weight: 600; font-size: 14px; flex: 1; }
+    .ai-suggestions-scroll { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .ai-footer { padding: 11px 16px; border-top: 1px solid #e2e8f0; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+
+    /* ── Suggestion cards ── */
+    .sug-card { border: 1px solid #e2e8f0; border-radius: 10px; padding: 11px 13px; transition: border-color 0.15s, background 0.15s; }
+    .sug-card.accepted { border-color: #86efac; background: #f0fdf4; }
+    .sug-card.skipped { opacity: 0.35; pointer-events: none; }
+    .sug-type { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; display: inline-block; }
+    .sug-merge  { background: #ede9fe; color: #5b21b6; }
+    .sug-rename { background: #dcfce7; color: #15803d; }
+    .sug-move   { background: #dbeafe; color: #1d4ed8; }
+    .sug-group  { background: #fef3c7; color: #92400e; }
+    .sug-desc { font-size: 13px; color: #0f172a; margin-top: 7px; line-height: 1.45; }
+    .sug-reason { font-size: 12px; color: #64748b; margin-top: 3px; line-height: 1.4; }
+    .sug-btns { display: flex; gap: 6px; margin-top: 9px; }
+    .sug-accept { font-size: 12px; padding: 4px 11px; border-radius: 6px; border: 1px solid #86efac; background: #f0fdf4; color: #15803d; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+    .sug-accept.active { background: #22c55e; color: white; border-color: #22c55e; }
+    .sug-skip   { font-size: 12px; padding: 4px 11px; border-radius: 6px; border: 1px solid #fca5a5; background: #fef2f2; color: #dc2626; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+    .sug-skip:hover { background: #ef4444; color: white; border-color: #ef4444; }
+    .accepted-info { font-size: 13px; color: #64748b; }
+    .btn-apply-plan { background: #0f172a; color: white; border: none; border-radius: 8px; padding: 7px 16px; font-size: 13px; font-weight: 500; cursor: pointer; }
+    .btn-apply-plan:disabled { opacity: 0.35; cursor: default; }
+    .ai-placeholder { text-align: center; padding: 36px 16px; color: #94a3b8; font-size: 13px; line-height: 1.6; }
+
+    /* ── Log panel ── */
+    .log-panel { position: fixed; bottom: 0; left: 0; right: 0; background: #1e293b; color: #94a3b8; font-family: 'Menlo', 'Courier New', monospace; font-size: 12px; max-height: 200px; overflow-y: auto; padding: 10px 16px 14px; display: none; z-index: 300; border-top: 2px solid var(--blue); }
+    .log-panel.visible { display: block; }
+    .log-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; color: #e2e8f0; font-family: system-ui; }
+    .log-line { line-height: 1.65; }
+    .log-line.success { color: #4ade80; }
+    .log-line.error   { color: #f87171; }
+    .log-close { background: transparent; border: none; color: #64748b; cursor: pointer; font-size: 18px; line-height: 1; }
+    .log-close:hover { color: #e2e8f0; }
+
+    /* ── Misc ── */
+    .spinner { width: 15px; height: 15px; border: 2px solid #e2e8f0; border-top-color: var(--blue); border-radius: 50%; animation: spin 0.6s linear infinite; display: inline-block; vertical-align: middle; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .empty-state { text-align: center; padding: 48px 24px; color: #94a3b8; }
+    .modal-body label { font-size: 12px; font-weight: 500; display: block; margin-bottom: 4px; margin-top: 10px; color: #475569; }
+    .modal-body label:first-child { margin-top: 0; }
+    select.form-select { font-size: 13px; }
+    mark { background: #fef08a; border-radius: 2px; padding: 0; }
+  </style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav class="app-nav">
+  <a href="/" class="back-link"><i class="bi bi-arrow-left"></i> Inbox</a>
+  <div class="nav-divider"></div>
+  <i class="bi bi-tags" style="color:#64748b;font-size:15px"></i>
+  <span class="nav-title">Label Manager</span>
+  <span class="nav-badge" id="nav-count">—</span>
+  <div class="nav-right">
+    <button class="btn-nav" onclick="showNewLabelModal()">
+      <i class="bi bi-plus-lg"></i> New label
+    </button>
+    <button class="btn-nav btn-nav-ai" id="btn-ai" onclick="toggleAIPanel()">
+      <i class="bi bi-stars"></i> AI Reorganize
+    </button>
+  </div>
+</nav>
+
+<!-- Stats bar -->
+<div class="stats-bar">
+  <div class="stat-item"><span class="stat-val" id="stat-total">—</span><span class="stat-lbl">Labels</span></div>
+  <div class="stat-item"><span class="stat-val" id="stat-parents">—</span><span class="stat-lbl">Folders</span></div>
+  <div class="stat-item"><span class="stat-val" id="stat-flat">—</span><span class="stat-lbl">Flat</span></div>
+  <div class="stat-item"><span class="stat-val" id="stat-depth">—</span><span class="stat-lbl">Max depth</span></div>
+</div>
+
+<!-- Main -->
+<div class="main-layout">
+  <!-- Tree -->
+  <div class="tree-panel">
+    <div class="tree-toolbar">
+      <input type="search" class="search-input" id="search-input" placeholder="Search labels…" oninput="filterTree(this.value)">
+    </div>
+    <div class="tree-scroll" id="tree-container">
+      <div class="empty-state"><span class="spinner"></span><br><br>Loading labels…</div>
+    </div>
+  </div>
+
+  <!-- AI Panel -->
+  <div class="ai-panel" id="ai-panel">
+    <div class="ai-panel-inner">
+      <div class="ai-panel-header">
+        <i class="bi bi-stars" style="color:var(--purple);font-size:16px"></i>
+        <span class="ai-panel-title">AI Reorganize</span>
+        <button class="btn-nav" style="padding:4px 10px;font-size:12px" id="btn-run-ai" onclick="runAIAnalysis()">
+          <i class="bi bi-arrow-clockwise"></i> Analyze
+        </button>
+        <button class="log-close" onclick="toggleAIPanel()" title="Close">×</button>
+      </div>
+      <div class="ai-suggestions-scroll" id="ai-suggestions">
+        <div class="ai-placeholder">
+          <i class="bi bi-stars" style="font-size:28px;color:#c4b5fd;display:block;margin-bottom:12px"></i>
+          Click <strong>Analyze</strong> to let AI review your label structure and suggest improvements.
+        </div>
+      </div>
+      <div class="ai-footer">
+        <span class="accepted-info" id="accepted-info">0 accepted</span>
+        <button class="btn-apply-plan" id="btn-apply" onclick="applyAccepted()" disabled>Apply changes</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Log panel -->
+<div class="log-panel" id="log-panel">
+  <div class="log-header">
+    <span style="font-size:13px;font-weight:600">Operation log</span>
+    <button class="log-close" onclick="document.getElementById('log-panel').classList.remove('visible')">×</button>
+  </div>
+  <div id="log-lines"></div>
+</div>
+
+<!-- Delete modal -->
+<div class="modal fade" id="deleteModal" tabindex="-1">
+  <div class="modal-dialog modal-sm">
+    <div class="modal-content">
+      <div class="modal-header py-3">
+        <h6 class="modal-title fw-semibold">Delete label</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body py-2">
+        <p id="delete-body" style="font-size:13px;color:#475569;margin:0"></p>
+        <div id="delete-cascade-wrap" style="margin-top:12px;display:none">
+          <div class="form-check">
+            <input type="checkbox" class="form-check-input" id="cascade-check">
+            <label class="form-check-label" for="cascade-check" style="font-size:13px;margin-top:0">Also delete all child labels</label>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer py-2">
+        <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-sm btn-danger" onclick="confirmDelete()">Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Move modal -->
+<div class="modal fade" id="moveModal" tabindex="-1">
+  <div class="modal-dialog modal-sm">
+    <div class="modal-content">
+      <div class="modal-header py-3">
+        <h6 class="modal-title fw-semibold">Move label</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body py-2">
+        <p id="move-label-name" style="font-size:12px;color:#64748b;margin:0 0 10px"></p>
+        <label>Move to parent:</label>
+        <select class="form-select form-select-sm" id="move-parent-select"></select>
+      </div>
+      <div class="modal-footer py-2">
+        <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-sm btn-primary" onclick="confirmMove()">Move</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- New label modal -->
+<div class="modal fade" id="newLabelModal" tabindex="-1">
+  <div class="modal-dialog modal-sm">
+    <div class="modal-content">
+      <div class="modal-header py-3">
+        <h6 class="modal-title fw-semibold">New label</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body py-2">
+        <label>Label name</label>
+        <input type="text" id="new-label-name" class="form-control form-control-sm" placeholder="e.g. Finance">
+        <label>Parent (optional)</label>
+        <select class="form-select form-select-sm" id="new-label-parent"></select>
+      </div>
+      <div class="modal-footer py-2">
+        <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-sm btn-primary" onclick="confirmNewLabel()">Create</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════════════════════
+let treeData  = [];   // nested tree from API
+let flatAll   = [];   // flat list of all nodes
+let expanded  = new Set();
+let renamingId = null;
+let filterText = '';
+let pendingDelete = null;
+let pendingMove   = null;
+let suggestions   = [];
+let accepted      = new Set();
+let skipped       = new Set();
+let aiPanelOpen   = false;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LOAD
+// ═══════════════════════════════════════════════════════════════════════════
+async function loadTree() {
+  try {
+    const res  = await fetch('/api/labels_tree');
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    treeData = data.tree || [];
+    flatAll  = [];
+    collectFlat(treeData);
+    // Expand top-level by default
+    treeData.forEach(n => { if (n.children && n.children.length) expanded.add(n.id); });
+    updateStats();
+    renderTree();
+  } catch(e) {
+    document.getElementById('tree-container').innerHTML =
+      `<div class="empty-state" style="color:#ef4444"><i class="bi bi-exclamation-circle" style="font-size:24px"></i><br><br>${esc(e.message)}</div>`;
+  }
+}
+
+function collectFlat(nodes) {
+  for (const n of nodes) {
+    flatAll.push(n);
+    if (n.children && n.children.length) collectFlat(n.children);
+  }
+}
+
+function updateStats() {
+  const total   = flatAll.length;
+  const parents = flatAll.filter(n => n.children && n.children.length > 0).length;
+  const flat    = treeData.filter(n => !n.children || n.children.length === 0).length;
+  const depth   = maxDepth(treeData, 0);
+  document.getElementById('stat-total').textContent   = total;
+  document.getElementById('stat-parents').textContent = parents;
+  document.getElementById('stat-flat').textContent    = flat;
+  document.getElementById('stat-depth').textContent   = depth;
+  document.getElementById('nav-count').textContent    = `${total} labels`;
+}
+
+function maxDepth(nodes, d) {
+  let m = d;
+  for (const n of nodes) {
+    if (n.children && n.children.length) m = Math.max(m, maxDepth(n.children, d + 1));
+  }
+  return m;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RENDER TREE
+// ═══════════════════════════════════════════════════════════════════════════
+function renderTree() {
+  const container = document.getElementById('tree-container');
+  const search    = filterText.toLowerCase().trim();
+  const parts     = [];
+
+  function renderNodes(nodes, depth) {
+    for (const node of nodes) {
+      if (search && !nodeOrChildMatches(node, search)) continue;
+      const hasKids   = node.children && node.children.length > 0;
+      const isOpen    = expanded.has(node.id);
+      const isRename  = renamingId === node.id;
+      const indent    = depth * 18;
+      const iconClass = hasKids
+        ? (isOpen ? 'bi-folder2-open' : 'bi-folder2')
+        : 'bi-tag';
+      const iconColor = hasKids ? '#f59e0b' : '#94a3b8';
+
+      parts.push(`
+        <div class="tree-item" data-id="${node.id}">
+          <div class="tree-indent" style="width:${indent}px"></div>
+          ${hasKids
+            ? `<button class="toggle-btn" onclick="toggleExpand('${node.id}',event)" title="${isOpen ? 'Collapse' : 'Expand'}">
+                 <i class="bi bi-chevron-${isOpen ? 'down' : 'right'}"></i>
+               </button>`
+            : `<div style="width:20px;flex-shrink:0"></div>`}
+          <i class="bi ${iconClass} tree-icon" style="color:${iconColor}"></i>
+          ${isRename
+            ? `<input class="rename-input" id="ri-${node.id}"
+                 value="${esc(node.name)}"
+                 onkeydown="handleRenameKey(event,'${node.id}','${esc(node.fullName)}')"
+                 onblur="cancelRename()"
+                 onclick="event.stopPropagation()">`
+            : `<span class="tree-name-span" title="${esc(node.fullName)}">${highlight(node.name, search)}</span>`}
+          ${node.messagesTotal ? `<span class="tree-msg-count">${node.messagesTotal}</span>` : ''}
+          ${!isRename ? `<div class="tree-actions">
+            <button class="tree-action-btn" title="Rename" onclick="startRename('${node.id}','${esc(node.fullName)}',event)"><i class="bi bi-pencil"></i></button>
+            <button class="tree-action-btn" title="Move to…" onclick="showMoveModal('${node.id}','${esc(node.fullName)}',event)"><i class="bi bi-arrows-move"></i></button>
+            <button class="tree-action-btn danger" title="Delete" onclick="showDeleteModal('${node.id}','${esc(node.fullName)}',${hasKids},event)"><i class="bi bi-trash"></i></button>
+          </div>` : ''}
+        </div>`);
+
+      if (hasKids && (isOpen || search)) renderNodes(node.children, depth + 1);
+    }
+  }
+
+  renderNodes(treeData, 0);
+
+  if (!parts.length) {
+    container.innerHTML = `<div class="empty-state">${search ? 'No labels match "' + esc(search) + '"' : 'No labels yet.'}</div>`;
+  } else {
+    container.innerHTML = parts.join('');
+  }
+
+  if (renamingId) {
+    const el = document.getElementById(`ri-${renamingId}`);
+    if (el) { el.focus(); el.select(); }
+  }
+}
+
+function nodeOrChildMatches(node, search) {
+  if (node.fullName.toLowerCase().includes(search) || node.name.toLowerCase().includes(search)) return true;
+  if (node.children) for (const c of node.children) if (nodeOrChildMatches(c, search)) return true;
+  return false;
+}
+
+function highlight(name, search) {
+  if (!search) return esc(name);
+  const lo  = name.toLowerCase();
+  const idx = lo.indexOf(search);
+  if (idx < 0) return esc(name);
+  return esc(name.slice(0, idx)) + `<mark>${esc(name.slice(idx, idx + search.length))}</mark>` + esc(name.slice(idx + search.length));
+}
+
+function filterTree(val) {
+  filterText = val;
+  if (val) flatAll.forEach(n => expanded.add(n.id));
+  renderTree();
+}
+
+function toggleExpand(id, event) {
+  event.stopPropagation();
+  expanded.has(id) ? expanded.delete(id) : expanded.add(id);
+  renderTree();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RENAME
+// ═══════════════════════════════════════════════════════════════════════════
+function startRename(labelId, fullName, event) {
+  event.stopPropagation();
+  renamingId = labelId;
+  renderTree();
+}
+
+function cancelRename() {
+  renamingId = null;
+  renderTree();
+}
+
+function handleRenameKey(event, labelId, fullName) {
+  if (event.key === 'Escape') { cancelRename(); return; }
+  if (event.key === 'Enter') {
+    const newShortName = event.target.value.trim();
+    if (!newShortName) { cancelRename(); return; }
+    const parts = fullName.split('/');
+    parts[parts.length - 1] = newShortName;
+    const newFullName = parts.join('/');
+    if (newFullName === fullName) { cancelRename(); return; }
+    submitRename(labelId, fullName, newFullName);
+  }
+}
+
+async function submitRename(labelId, oldFullName, newFullName) {
+  renamingId = null;
+  renderTree();
+  try {
+    const res  = await fetch('/api/labels/rename', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ labelId, newFullName })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    const childNote = data.childrenRenamed > 0 ? ` (+ ${data.childrenRenamed} child${data.childrenRenamed > 1 ? 'ren' : ''})` : '';
+    addLog(`Renamed "${oldFullName}" → "${newFullName}"${childNote}`, 'success');
+    await loadTree();
+  } catch(e) {
+    addLog(`Error renaming: ${e.message}`, 'error');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DELETE
+// ═══════════════════════════════════════════════════════════════════════════
+function showDeleteModal(labelId, fullName, hasChildren, event) {
+  event.stopPropagation();
+  pendingDelete = { labelId, fullName };
+  document.getElementById('delete-body').textContent = hasChildren
+    ? `Delete "${fullName}"? It has child labels. Messages will keep their other labels.`
+    : `Delete "${fullName}"? Messages will keep their other labels.`;
+  const wrap = document.getElementById('delete-cascade-wrap');
+  wrap.style.display = hasChildren ? 'block' : 'none';
+  document.getElementById('cascade-check').checked = false;
+  new bootstrap.Modal(document.getElementById('deleteModal')).show();
+}
+
+async function confirmDelete() {
+  if (!pendingDelete) return;
+  const { labelId, fullName } = pendingDelete;
+  const cascade = document.getElementById('cascade-check').checked;
+  bootstrap.Modal.getInstance(document.getElementById('deleteModal')).hide();
+  try {
+    const res  = await fetch('/api/labels/delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ labelId, cascade })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    addLog(`Deleted "${fullName}"${cascade ? ' + children' : ''}`, 'success');
+    await loadTree();
+  } catch(e) {
+    addLog(`Error deleting: ${e.message}`, 'error');
+  }
+  pendingDelete = null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MOVE
+// ═══════════════════════════════════════════════════════════════════════════
+function showMoveModal(labelId, fullName, event) {
+  event.stopPropagation();
+  pendingMove = { labelId, fullName };
+  document.getElementById('move-label-name').textContent = `Label: ${fullName}`;
+  const sel  = document.getElementById('move-parent-select');
+  const opts = ['<option value="">— Root (no parent) —</option>'];
+  const selfPfx = fullName + '/';
+  for (const n of flatAll) {
+    if (n.fullName === fullName || n.fullName.startsWith(selfPfx)) continue;
+    opts.push(`<option value="${esc(n.fullName)}">${esc(n.fullName)}</option>`);
+  }
+  sel.innerHTML = opts.join('');
+  const curParent = fullName.includes('/') ? fullName.split('/').slice(0, -1).join('/') : '';
+  sel.value = curParent;
+  new bootstrap.Modal(document.getElementById('moveModal')).show();
+}
+
+async function confirmMove() {
+  if (!pendingMove) return;
+  const { labelId, fullName } = pendingMove;
+  const newParent  = document.getElementById('move-parent-select').value;
+  const shortName  = fullName.split('/').pop();
+  const newFullName = newParent ? `${newParent}/${shortName}` : shortName;
+  bootstrap.Modal.getInstance(document.getElementById('moveModal')).hide();
+  if (newFullName === fullName) { pendingMove = null; return; }
+  try {
+    const res  = await fetch('/api/labels/rename', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ labelId, newFullName })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    addLog(`Moved "${fullName}" → "${newFullName}"`, 'success');
+    await loadTree();
+  } catch(e) {
+    addLog(`Error moving: ${e.message}`, 'error');
+  }
+  pendingMove = null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NEW LABEL
+// ═══════════════════════════════════════════════════════════════════════════
+function showNewLabelModal() {
+  document.getElementById('new-label-name').value = '';
+  const sel  = document.getElementById('new-label-parent');
+  const opts = ['<option value="">— Root (no parent) —</option>'];
+  for (const n of flatAll) opts.push(`<option value="${esc(n.fullName)}">${esc(n.fullName)}</option>`);
+  sel.innerHTML = opts.join('');
+  new bootstrap.Modal(document.getElementById('newLabelModal')).show();
+  setTimeout(() => document.getElementById('new-label-name').focus(), 300);
+}
+
+async function confirmNewLabel() {
+  const name   = document.getElementById('new-label-name').value.trim();
+  const parent = document.getElementById('new-label-parent').value;
+  if (!name) return;
+  const fullName = parent ? `${parent}/${name}` : name;
+  bootstrap.Modal.getInstance(document.getElementById('newLabelModal')).hide();
+  try {
+    const res  = await fetch('/api/create_label', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name: fullName })
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    addLog(`Created label "${fullName}"`, 'success');
+    await loadTree();
+  } catch(e) {
+    addLog(`Error creating label: ${e.message}`, 'error');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AI PANEL
+// ═══════════════════════════════════════════════════════════════════════════
+function toggleAIPanel() {
+  aiPanelOpen = !aiPanelOpen;
+  document.getElementById('ai-panel').classList.toggle('open', aiPanelOpen);
+}
+
+async function runAIAnalysis() {
+  const btn = document.getElementById('btn-run-ai');
+  btn.innerHTML = '<span class="spinner"></span>';
+  btn.disabled  = true;
+  document.getElementById('ai-suggestions').innerHTML = `<div class="ai-placeholder"><span class="spinner"></span><br><br>Analysing ${flatAll.length} labels…</div>`;
+  suggestions = []; accepted.clear(); skipped.clear(); updateApplyBtn();
+
+  try {
+    const res  = await fetch('/api/labels/ai_reorganize', { method: 'POST' });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    suggestions = data.suggestions || [];
+    renderSuggestions();
+  } catch(e) {
+    document.getElementById('ai-suggestions').innerHTML =
+      `<div class="ai-placeholder" style="color:#ef4444"><i class="bi bi-exclamation-circle" style="font-size:24px;display:block;margin-bottom:10px"></i>Error: ${esc(e.message)}</div>`;
+  } finally {
+    btn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Analyze';
+    btn.disabled  = false;
+  }
+}
+
+const TYPE_CLASS = { merge: 'sug-merge', rename: 'sug-rename', move: 'sug-move', group: 'sug-group' };
+
+function renderSuggestions() {
+  const container = document.getElementById('ai-suggestions');
+  if (!suggestions.length) {
+    container.innerHTML = `<div class="ai-placeholder"><i class="bi bi-check-circle" style="font-size:28px;color:#4ade80;display:block;margin-bottom:10px"></i>No improvements found — your labels look great!</div>`;
+    return;
+  }
+  container.innerHTML = suggestions.map((s, i) => {
+    const isAccepted = accepted.has(i);
+    const isSkipped  = skipped.has(i);
+    return `<div class="sug-card${isAccepted ? ' accepted' : ''}${isSkipped ? ' skipped' : ''}" id="sug-${i}">
+      <span class="sug-type ${TYPE_CLASS[s.type] || ''}">${s.type}</span>
+      <div class="sug-desc">${esc(s.description)}</div>
+      <div class="sug-reason">${esc(s.reason)}</div>
+      <div class="sug-btns">
+        <button class="sug-accept${isAccepted ? ' active' : ''}" onclick="toggleAccept(${i})">
+          <i class="bi bi-check-lg"></i> ${isAccepted ? 'Accepted' : 'Accept'}
+        </button>
+        <button class="sug-skip" onclick="skipSuggestion(${i})">
+          <i class="bi bi-x-lg"></i> Skip
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleAccept(i) {
+  if (accepted.has(i)) accepted.delete(i);
+  else { accepted.add(i); skipped.delete(i); }
+  renderSuggestions();
+  updateApplyBtn();
+}
+
+function skipSuggestion(i) {
+  accepted.delete(i);
+  skipped.add(i);
+  renderSuggestions();
+  updateApplyBtn();
+}
+
+function updateApplyBtn() {
+  const n = accepted.size;
+  document.getElementById('accepted-info').textContent = `${n} accepted`;
+  document.getElementById('btn-apply').disabled = n === 0;
+}
+
+async function applyAccepted() {
+  const ops = [...accepted].sort((a,b) => a-b).map(i => suggestions[i]);
+  if (!ops.length) return;
+  showLog();
+  addLog(`Applying ${ops.length} operation(s)…`);
+  document.getElementById('btn-apply').disabled = true;
+
+  try {
+    const res    = await fetch('/api/labels/apply_plan', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ operations: ops })
+    });
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let done = false;
+    while (!done) {
+      const { value, done: d } = await reader.read();
+      done = d;
+      if (!value) continue;
+      for (const line of decoder.decode(value).split('\n').filter(Boolean)) {
+        try {
+          const obj = JSON.parse(line);
+          if (obj.status === 'complete') {
+            addLog('All operations complete.', 'success');
+            await loadTree();
+            // Clear accepted suggestions
+            accepted.clear(); skipped.clear(); updateApplyBtn(); renderSuggestions();
+          } else if (obj.msg) {
+            addLog(obj.msg, obj.status === 'op_complete' ? 'success' : '');
+          }
+        } catch(_) {}
+      }
+    }
+  } catch(e) {
+    addLog(`Error: ${e.message}`, 'error');
+  }
+  document.getElementById('btn-apply').disabled = accepted.size === 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LOG
+// ═══════════════════════════════════════════════════════════════════════════
+function showLog() {
+  document.getElementById('log-panel').classList.add('visible');
+  document.getElementById('log-lines').innerHTML = '';
+}
+
+function addLog(msg, type = '') {
+  document.getElementById('log-panel').classList.add('visible');
+  const lines = document.getElementById('log-lines');
+  const div   = document.createElement('div');
+  div.className = `log-line${type ? ' ' + type : ''}`;
+  const now = new Date();
+  const ts  = `[${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}]`;
+  div.textContent = `${ts} ${msg}`;
+  lines.appendChild(div);
+  document.getElementById('log-panel').scrollTop = 9999;
+}
+
+function pad(n) { return String(n).padStart(2, '0'); }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// UTILS
+// ═══════════════════════════════════════════════════════════════════════════
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BOOT
+// ═══════════════════════════════════════════════════════════════════════════
+loadTree();
+</script>
+</body>
+</html>

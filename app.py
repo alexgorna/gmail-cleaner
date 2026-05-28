@@ -429,5 +429,337 @@ def apply_actions():
     return Response(stream_with_context(generate_updates()), mimetype='application/json')
 
 
+# ── LABEL MANAGER ─────────────────────────────────────────────────────────────
+
+def build_label_tree(labels):
+    """Build nested tree from flat Gmail label list using '/' as separator."""
+    sorted_labels = sorted(labels, key=lambda x: x['name'].lower())
+    nodes = {}
+    roots = []
+    for label in sorted_labels:
+        name = label['name']
+        parts = name.split('/')
+        node = {
+            'id': label['id'],
+            'name': parts[-1],
+            'fullName': name,
+            'messagesTotal': label.get('messagesTotal', 0),
+            'messagesUnread': label.get('messagesUnread', 0),
+            'children': []
+        }
+        nodes[name] = node
+        if len(parts) > 1:
+            parent_name = '/'.join(parts[:-1])
+            if parent_name in nodes:
+                nodes[parent_name]['children'].append(node)
+            else:
+                roots.append(node)
+        else:
+            roots.append(node)
+    return roots
+
+
+@app.route('/labels')
+def labels_page():
+    if not get_creds():
+        return redirect(url_for('index'))
+    return render_template('labels.html')
+
+
+@app.route('/api/labels_tree')
+def api_labels_tree():
+    service = get_service()
+    if not service:
+        return jsonify({'error': 'Not logged in'}), 401
+    try:
+        results = service.users().labels().list(userId='me').execute()
+        user_labels = [l for l in results.get('labels', []) if l.get('type') == 'user']
+        tree = build_label_tree(user_labels)
+        flat = {l['id']: l for l in user_labels}
+        return jsonify({'tree': tree, 'flat': flat})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/labels/rename', methods=['POST'])
+def api_label_rename():
+    data = request.json
+    label_id = data['labelId']
+    new_full_name = data['newFullName']
+    service = get_service()
+    if not service:
+        return jsonify({'error': 'Not logged in'}), 401
+    try:
+        current = service.users().labels().get(userId='me', id=label_id).execute()
+        old_full_name = current['name']
+
+        all_labels = service.users().labels().list(userId='me').execute().get('labels', [])
+        children = [l for l in all_labels if l.get('type') == 'user'
+                    and l['name'].startswith(old_full_name + '/') and l['id'] != label_id]
+
+        def rename_child(child):
+            suffix = child['name'][len(old_full_name):]
+            new_child_name = new_full_name + suffix
+            return service.users().labels().patch(
+                userId='me', id=child['id'], body={'name': new_child_name}
+            ).execute()
+
+        if children:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                list(executor.map(rename_child, children))
+
+        updated = service.users().labels().patch(
+            userId='me', id=label_id, body={'name': new_full_name}
+        ).execute()
+        return jsonify({'success': True, 'label': updated, 'childrenRenamed': len(children)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/labels/delete', methods=['POST'])
+def api_label_delete():
+    data = request.json
+    label_id = data['labelId']
+    cascade = data.get('cascade', False)
+    service = get_service()
+    if not service:
+        return jsonify({'error': 'Not logged in'}), 401
+    try:
+        current = service.users().labels().get(userId='me', id=label_id).execute()
+        old_full_name = current['name']
+
+        if cascade:
+            all_labels = service.users().labels().list(userId='me').execute().get('labels', [])
+            children = [l for l in all_labels if l.get('type') == 'user'
+                        and l['name'].startswith(old_full_name + '/')]
+            for child in children:
+                try:
+                    service.users().labels().delete(userId='me', id=child['id']).execute()
+                except Exception:
+                    pass
+
+        service.users().labels().delete(userId='me', id=label_id).execute()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/labels/ai_reorganize', methods=['POST'])
+def api_ai_reorganize():
+    service = get_service()
+    if not service:
+        return jsonify({'error': 'Not logged in'}), 401
+    try:
+        from openai import OpenAI
+        results = service.users().labels().list(userId='me').execute()
+        user_labels = [l for l in results.get('labels', []) if l.get('type') == 'user']
+        label_names = sorted([l['name'] for l in user_labels])
+        name_to_id = {l['name']: l['id'] for l in user_labels}
+
+        label_list = '\n'.join(f'- {n}' for n in label_names)
+
+        client = OpenAI(
+            api_key=os.environ.get('DEEPSEEK_API_KEY'),
+            base_url='https://api.deepseek.com'
+        )
+        response = client.chat.completions.create(
+            model='deepseek-chat',
+            temperature=0.3,
+            max_tokens=2000,
+            messages=[
+                {'role': 'system', 'content': 'You are a Gmail label organizer. Return only valid JSON arrays, no markdown.'},
+                {'role': 'user', 'content': f"""Analyze these Gmail labels and suggest up to 10 improvements:
+
+{label_list}
+
+Return a JSON array. Each element must be one of these shapes:
+
+Merge duplicates:
+{{"type":"merge","description":"short description","reason":"why","params":{{"sourceNames":["A","B"],"targetName":"C"}}}}
+
+Rename for consistency:
+{{"type":"rename","description":"short description","reason":"why","params":{{"oldName":"A","newName":"B"}}}}
+
+Move to better parent:
+{{"type":"move","description":"short description","reason":"why","params":{{"labelName":"A","newParentName":"B"}}}}
+
+Group flat labels under new parent:
+{{"type":"group","description":"short description","reason":"why","params":{{"newParentName":"A","childNames":["B","C","D"]}}}}
+
+Rules:
+- Only reference label names that appear in the list above exactly as written
+- For merge: sourceNames are deleted and their messages moved to targetName
+- For group: childNames are moved under newParentName (create it if it doesn't exist)
+- Prioritize: 1) merge near-duplicates 2) language/case standardization 3) hierarchy improvements
+- Return ONLY the JSON array"""}
+            ]
+        )
+
+        raw = response.choices[0].message.content.strip()
+        if '```' in raw:
+            raw = raw.split('```')[1]
+            if raw.startswith('json'):
+                raw = raw[4:]
+        raw = raw.strip()
+
+        suggestions = json.loads(raw)
+
+        # Attach IDs where we can resolve them upfront
+        for sug in suggestions:
+            p = sug.get('params', {})
+            if sug['type'] == 'rename':
+                p['labelId'] = name_to_id.get(p.get('oldName'))
+            elif sug['type'] == 'move':
+                p['labelId'] = name_to_id.get(p.get('labelName'))
+            elif sug['type'] == 'merge':
+                p['sourceIds'] = [name_to_id[n] for n in p.get('sourceNames', []) if n in name_to_id]
+                p['targetId'] = name_to_id.get(p.get('targetName'))
+
+        return jsonify({'suggestions': suggestions, 'totalLabels': len(user_labels)})
+    except json.JSONDecodeError as e:
+        return jsonify({'error': f'AI returned invalid JSON: {e}'}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/labels/apply_plan', methods=['POST'])
+def api_labels_apply_plan():
+    data = request.json
+    operations = data.get('operations', [])
+    if not operations:
+        return jsonify({'error': 'No operations provided'}), 400
+
+    def generate():
+        service = get_service()
+        if not service:
+            yield json.dumps({'error': 'Not logged in'}) + '\n'
+            return
+
+        yield json.dumps({'msg': f'Starting {len(operations)} operation(s)…'}) + '\n'
+
+        # Build live name→label map (refreshed after each op)
+        def get_label_map():
+            res = service.users().labels().list(userId='me').execute()
+            all_l = [l for l in res.get('labels', []) if l.get('type') == 'user']
+            return {l['name']: l for l in all_l}, {l['id']: l for l in all_l}
+
+        name_map, id_map = get_label_map()
+
+        for op in operations:
+            op_type = op.get('type')
+            p = op.get('params', {})
+            try:
+                if op_type == 'rename':
+                    old_name = p.get('oldName')
+                    new_name = p.get('newName')
+                    label = name_map.get(old_name)
+                    if not label:
+                        yield json.dumps({'msg': f'  ⚠ Rename: "{old_name}" not found, skipping.'}) + '\n'
+                        continue
+                    # Cascade to children
+                    children = [(n, l) for n, l in name_map.items() if n.startswith(old_name + '/')]
+                    for child_name, child_label in children:
+                        new_child = new_name + child_name[len(old_name):]
+                        service.users().labels().patch(userId='me', id=child_label['id'], body={'name': new_child}).execute()
+                    service.users().labels().patch(userId='me', id=label['id'], body={'name': new_name}).execute()
+                    yield json.dumps({'status': 'op_complete', 'type': op_type,
+                                      'msg': f'  ✓ Renamed "{old_name}" → "{new_name}"'}) + '\n'
+
+                elif op_type == 'move':
+                    label_name = p.get('labelName')
+                    new_parent = p.get('newParentName', '')
+                    label = name_map.get(label_name)
+                    if not label:
+                        yield json.dumps({'msg': f'  ⚠ Move: "{label_name}" not found, skipping.'}) + '\n'
+                        continue
+                    short = label_name.split('/')[-1]
+                    new_full = f'{new_parent}/{short}' if new_parent else short
+                    children = [(n, l) for n, l in name_map.items() if n.startswith(label_name + '/')]
+                    for child_name, child_label in children:
+                        new_child = new_full + child_name[len(label_name):]
+                        service.users().labels().patch(userId='me', id=child_label['id'], body={'name': new_child}).execute()
+                    service.users().labels().patch(userId='me', id=label['id'], body={'name': new_full}).execute()
+                    yield json.dumps({'status': 'op_complete', 'type': op_type,
+                                      'msg': f'  ✓ Moved "{label_name}" → "{new_full}"'}) + '\n'
+
+                elif op_type == 'merge':
+                    source_names = p.get('sourceNames', [])
+                    target_name = p.get('targetName')
+                    # Ensure target label exists
+                    target_label = name_map.get(target_name)
+                    if not target_label:
+                        target_label = service.users().labels().create(
+                            userId='me', body={'name': target_name,
+                                               'labelListVisibility': 'labelShow',
+                                               'messageListVisibility': 'show'}
+                        ).execute()
+                        yield json.dumps({'msg': f'  + Created label "{target_name}"'}) + '\n'
+
+                    merged = 0
+                    for src_name in source_names:
+                        if src_name == target_name:
+                            continue
+                        src = name_map.get(src_name)
+                        if not src:
+                            continue
+                        # Find all messages with source label
+                        msgs = []
+                        token = None
+                        while True:
+                            res = service.users().messages().list(
+                                userId='me', labelIds=[src['id']], maxResults=MAX_MESSAGES_PER_PAGE, pageToken=token
+                            ).execute()
+                            msgs.extend(res.get('messages', []))
+                            token = res.get('nextPageToken')
+                            if not token:
+                                break
+                        if msgs:
+                            all_ids = [m['id'] for m in msgs]
+                            for i in range(0, len(all_ids), BATCH_SIZE):
+                                batch = all_ids[i:i + BATCH_SIZE]
+                                service.users().messages().batchModify(
+                                    userId='me',
+                                    body={'ids': batch,
+                                          'addLabelIds': [target_label['id']],
+                                          'removeLabelIds': [src['id']]}
+                                ).execute()
+                        service.users().labels().delete(userId='me', id=src['id']).execute()
+                        merged += len(msgs)
+
+                    yield json.dumps({'status': 'op_complete', 'type': op_type,
+                                      'msg': f'  ✓ Merged {len(source_names)} label(s) into "{target_name}" ({merged} messages)'}) + '\n'
+
+                elif op_type == 'group':
+                    new_parent_name = p.get('newParentName')
+                    child_names = p.get('childNames', [])
+                    # Create parent if needed
+                    if new_parent_name not in name_map:
+                        service.users().labels().create(
+                            userId='me', body={'name': new_parent_name,
+                                               'labelListVisibility': 'labelShow',
+                                               'messageListVisibility': 'show'}
+                        ).execute()
+                        yield json.dumps({'msg': f'  + Created parent "{new_parent_name}"'}) + '\n'
+                    for child_name in child_names:
+                        child = name_map.get(child_name)
+                        if not child:
+                            continue
+                        short = child_name.split('/')[-1]
+                        new_child_full = f'{new_parent_name}/{short}'
+                        service.users().labels().patch(userId='me', id=child['id'], body={'name': new_child_full}).execute()
+                    yield json.dumps({'status': 'op_complete', 'type': op_type,
+                                      'msg': f'  ✓ Grouped {len(child_names)} label(s) under "{new_parent_name}"'}) + '\n'
+
+                # Refresh label map after each op so subsequent ops see current state
+                name_map, id_map = get_label_map()
+
+            except Exception as e:
+                yield json.dumps({'msg': f'  ✗ Error in {op_type}: {e}'}) + '\n'
+
+        yield json.dumps({'status': 'complete', 'msg': 'Done.'}) + '\n'
+
+    return Response(stream_with_context(generate()), mimetype='application/json')
+
+
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

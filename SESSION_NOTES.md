@@ -616,3 +616,50 @@ The `.row-ai-applied` rule was moved from TR-level to TD-level so it wins over z
 ---
 
 **Files changed:** `templates/dashboard.html` only. Commit pushed; Railway auto-deploys on push to `main`.
+
+---
+
+### 26. Feature — Label Manager (`/labels` page)
+
+**What it does:**
+- Full label management page at `/labels` with a Finder-style collapsible tree
+- Inline rename (click pencil → type → Enter to save, Escape to cancel)
+- Move modal (change parent via select → renames the full path including children)
+- Delete with optional cascade (checkbox to also delete all child labels)
+- Create new label with optional parent
+- Search/filter with live highlighting
+- Stats row: total labels, folders, flat labels, max depth
+- AI Reorganize panel (slides in from right): sends all label names to DeepSeek, returns merge/rename/move/group suggestions; accept/skip per suggestion; "Apply changes" streams operations back with live log
+
+**Backend routes added to `app.py`:**
+- `GET /labels` — renders `templates/labels.html`
+- `GET /api/labels_tree` — returns nested tree of user labels with `id`, `name`, `fullName`, `children`, `messagesTotal`
+- `POST /api/labels/rename` — renames a label and all its children (Gmail has no native move; rename is the mechanism); returns `childrenRenamed` count
+- `POST /api/labels/delete` — deletes a label, optionally cascading to children
+- `POST /api/labels/ai_reorganize` — calls DeepSeek directly (not via Celery) with all label names; returns `{suggestions, totalLabels}`
+- `POST /api/labels/apply_plan` — streaming endpoint; executes a list of accepted operations server-side, yielding NDJSON progress lines
+
+**AI reorganize (`api_ai_reorganize`):**
+- Calls DeepSeek `deepseek-chat` directly via `import requests as _http` (same pattern as `ai_labeler.py` — NOT the openai package)
+- Uses `DEEPSEEK_API_KEY` env var
+- `response_format: {type: json_object}`, `temperature: 0.3`
+- `max_tokens: 4000` (was 2000 — bumped after truncation error; `ai_labeler.py` uses 16000 for the same reason, see item 15)
+- `timeout=(10, 90)` — tuple form for connect+read timeouts (same as `ai_labeler.py`)
+- Checks `finish_reason == 'length'` and returns a user-facing error instead of a parse crash
+- JSON cleaned with regex (same robust approach as `ai_labeler._clean_json`)
+- Returns suggestions typed as `merge`, `rename`, `move`, `group` — each with `description`, `reason`, `params`
+- Resolves Gmail label IDs upfront (attached to `params` before returning to client)
+
+**New file:** `templates/labels.html`
+- Matches dashboard design exactly: same CSS variables, same navbar, same blue gradient hero, same card/shadow, same `.console-window` CSS
+- CSRF: `<meta name="csrf-token">` + `csrfHeaders()` helper function — same as dashboard
+- System log: `#scan-debugger` with `.console-window` class, "System ready." hardcoded on load, toggle button always visible, `log(msg, type)` function identical in behavior to dashboard's `logToScanDebugger()`
+- AI errors write to the console log in addition to showing in the AI panel
+
+**Key lessons / pitfalls:**
+- DO NOT use the `openai` package — the project calls DeepSeek via raw `requests` HTTP. Always read `ai_labeler.py` before adding any AI call.
+- CSRF: all POST routes must receive `X-CSRFToken` header; Flask-WTF returns 400 HTML which breaks JSON parsing in JS (check `csrfHeaders()` helper).
+- Gmail has no "move label" API — moving is implemented as a rename to a new full path; children must be renamed individually.
+- `max_tokens=2000` was the initial (too-low) default for the reorganize endpoint; it caused `Unterminated string` JSON parse errors. Always use ≥4000 for label list responses.
+
+**Files changed:** `app.py`, `templates/labels.html` (new), `templates/dashboard.html` (Labels nav link added)

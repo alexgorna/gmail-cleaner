@@ -125,8 +125,12 @@
       display: flex; justify-content: space-between; align-items: center;
     }
 
+    /* ── Tree zebra rows (matches dashboard table zebra) ── */
+    .tree-item:nth-child(even) { background-color: #f8fafc; }
+    .tree-item:hover { background: #dbeafe !important; }
+
     /* ── Suggestion cards ── */
-    .sug-card { border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 14px; }
+    .sug-card { border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px 14px; background: white; }
     .sug-card.accepted { border-color: #86efac; background: #f0fdf4; }
     .sug-card.skipped  { opacity: 0.35; pointer-events: none; }
     .sug-type { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; display: inline-block; }
@@ -134,31 +138,49 @@
     .type-rename { background: #dcfce7; color: #15803d; }
     .type-move   { background: #dbeafe; color: #1d4ed8; }
     .type-group  { background: #fef3c7; color: #92400e; }
-    .sug-desc   { font-size: 13px; color: #0f172a; margin-top: 7px; line-height: 1.45; }
+    .sug-desc   { font-size: 13px; color: #0f172a; margin-top: 7px; line-height: 1.45; font-weight: 500; }
     .sug-reason { font-size: 12px; color: #64748b; margin-top: 3px; }
-    .sug-btns   { display: flex; gap: 6px; margin-top: 9px; }
-    .btn-accept { font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid #86efac; background: #f0fdf4; color: #15803d; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+    /* What-will-happen details block */
+    .sug-detail {
+      margin-top: 8px; padding: 7px 10px; border-radius: 7px;
+      background: rgba(0,0,0,0.03); border: 1px solid #e2e8f0;
+      font-size: 12px; line-height: 1.5;
+    }
+    .sug-detail .detail-row { display: flex; align-items: baseline; gap: 5px; margin-bottom: 2px; }
+    .sug-detail .detail-row:last-child { margin-bottom: 0; }
+    .sug-detail .detail-lbl { color: #94a3b8; font-size: 11px; flex-shrink: 0; }
+    .sug-detail .detail-val { color: #1e293b; font-family: 'SF Mono', Consolas, monospace; font-size: 11px; word-break: break-all; }
+    .sug-detail .arrow { color: #94a3b8; font-size: 13px; flex-shrink: 0; }
+    .sug-btns   { display: flex; gap: 6px; margin-top: 10px; }
+    .btn-accept { font-size: 12px; padding: 5px 12px; border-radius: 6px; border: 1px solid #86efac; background: #f0fdf4; color: #15803d; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-weight: 500; }
     .btn-accept.active { background: #22c55e; color: white; border-color: #22c55e; }
-    .btn-skip   { font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid #fca5a5; background: #fef2f2; color: #dc2626; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
-    .accepted-label { font-size: 13px; color: #64748b; }
+    .btn-skip   { font-size: 12px; padding: 5px 12px; border-radius: 6px; border: 1px solid #e2e8f0; background: white; color: #64748b; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+    .btn-skip:hover { background: #fef2f2; border-color: #fca5a5; color: #dc2626; }
+
+    /* ── AI footer — Apply Changes matches dashboard's Apply Actions ── */
+    .ai-footer {
+      padding: 12px 16px; border-top: 1px solid #f1f5f9;
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    }
+    .accepted-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;
+      border-radius: 20px; padding: 3px 10px; font-size: 12px; font-weight: 500;
+    }
 
     /* ── Console (identical to dashboard's .console-window) ── */
     .console-window {
       background-color: #1e1e1e; color: #4ade80;
       font-family: 'SF Mono', Consolas, monospace; font-size: 0.8rem;
       height: 150px; overflow-y: auto; border-radius: 8px;
-      padding: 15px; margin: 16px 20px; display: none;
+      padding: 15px; margin-top: 10px; display: none;
       border: 1px solid #333;
     }
-    .console-window.visible { display: block; }
     .log-error   { color: #ef4444; }
     .log-info    { color: #94a3b8; }
     .log-success { color: #22c55e; }
     .log-warn    { color: #facc15; }
 
-    /* ── Buttons ── */
-    .btn-apply-plan { background: #0d6efd; color: white; border: none; border-radius: 8px; padding: 7px 16px; font-size: 13px; font-weight: 500; cursor: pointer; }
-    .btn-apply-plan:disabled { opacity: 0.4; cursor: default; }
     .ai-placeholder { text-align: center; padding: 36px 16px; color: #94a3b8; font-size: 13px; line-height: 1.6; }
 
     /* ── Spinner ── */
@@ -218,9 +240,6 @@
           style="border:1px solid #c4b5fd;background:#f5f3ff;color:#6d28d9" onclick="toggleAIPanel()">
           <i class="bi bi-stars"></i> AI Reorganize
         </button>
-        <button class="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1" id="btn-toggle-log" onclick="toggleLog()" style="display:none!important">
-          <i class="bi bi-terminal"></i> Show System Logs
-        </button>
       </div>
     </div>
 
@@ -254,21 +273,23 @@
             </div>
           </div>
           <div class="ai-footer">
-            <span class="accepted-label" id="accepted-label">0 accepted</span>
-            <button class="btn-apply-plan" id="btn-apply" onclick="applyAccepted()" disabled>Apply changes</button>
+            <span class="accepted-badge" id="accepted-label"><i class="bi bi-check-circle-fill"></i> <span id="accepted-count">0</span> accepted</span>
+            <button class="btn btn-primary btn-sm fw-semibold" id="btn-apply" onclick="applyAccepted()" disabled style="padding:6px 16px;border-radius:8px">
+              <i class="bi bi-check2-all me-1"></i> Apply Changes
+            </button>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Console log (same style as dashboard) -->
-    <div style="margin:0 0 4px">
-      <div id="log-toggle-row" style="display:none;padding:10px 20px 0">
-        <button class="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1" onclick="toggleLog()" style="font-size:12px">
-          <i class="bi bi-terminal me-1"></i> <span id="log-toggle-label">Show System Logs</span>
-        </button>
+    <!-- Console log (identical to dashboard) -->
+    <div style="padding:10px 20px 16px">
+      <button class="btn btn-link text-decoration-none btn-sm text-secondary opacity-75" onclick="toggleLog()">
+        <i class="bi bi-terminal me-1"></i> Show System Logs
+      </button>
+      <div id="scan-debugger" class="console-window text-start mx-auto" style="max-width:800px">
+        <div class="log-info">System ready.</div>
       </div>
-      <div id="scan-debugger" class="console-window mx-3"></div>
     </div>
 
   </div>
@@ -355,7 +376,6 @@ let suggestions   = [];
 let accepted      = new Set();
 let skipped       = new Set();
 let aiOpen        = false;
-let logVisible    = false;
 
 // ── Boot ─────────────────────────────────────────────────────────────────
 (async function init() {
@@ -406,7 +426,6 @@ function updateStats() {
   document.getElementById('stat-depth').textContent   = depth;
   document.getElementById('stats-row').style.display  = 'flex';
   document.getElementById('hero-sub').textContent     = `${total} labels across ${parents} folder${parents !== 1 ? 's' : ''}`;
-  document.getElementById('log-toggle-row').style.display = 'block';
 }
 
 function getMaxDepth(nodes, d) {
@@ -640,8 +659,10 @@ async function runAIAnalysis() {
     const data = await res.json();
     if (data.error) throw new Error(data.error);
     suggestions = data.suggestions || [];
+    log(`AI returned ${suggestions.length} suggestion(s) for ${data.totalLabels || flatAll.length} labels.`, 'success');
     renderSuggestions();
   } catch(err) {
+    log(`AI Reorganize failed: ${err.message}`, 'error');
     document.getElementById('ai-suggestions').innerHTML =
       `<div class="ai-placeholder" style="color:#ef4444"><i class="bi bi-exclamation-circle" style="font-size:24px;display:block;margin-bottom:10px"></i>Error: ${esc(err.message)}</div>`;
   } finally {
@@ -650,7 +671,46 @@ async function runAIAnalysis() {
   }
 }
 
-const TYPE_CLS = { merge: 'type-merge', rename: 'type-rename', move: 'type-move', group: 'type-group' };
+const TYPE_CLS  = { merge: 'type-merge', rename: 'type-rename', move: 'type-move', group: 'type-group' };
+const TYPE_ICON = { merge: 'bi-diagram-2', rename: 'bi-pencil', move: 'bi-folder-symlink', group: 'bi-collection' };
+
+function sugDetail(s) {
+  const p = s.params || {};
+  if (s.type === 'merge') {
+    const sources = (p.sourceNames || []).map(n => `<span class="detail-val">${esc(n)}</span>`).join('<span class="arrow">+</span>');
+    return `<div class="sug-detail">
+      <div class="detail-row"><span class="detail-lbl">Merge:</span>${sources}</div>
+      <div class="detail-row"><span class="detail-lbl">Into:</span><span class="detail-val">${esc(p.targetName || '')}</span></div>
+    </div>`;
+  }
+  if (s.type === 'rename') {
+    return `<div class="sug-detail">
+      <div class="detail-row">
+        <span class="detail-val">${esc(p.oldName || '')}</span>
+        <span class="arrow">→</span>
+        <span class="detail-val">${esc(p.newName || '')}</span>
+      </div>
+    </div>`;
+  }
+  if (s.type === 'move') {
+    const dest = p.newParentName ? `${p.newParentName}/${(p.labelName||'').split('/').pop()}` : (p.labelName||'').split('/').pop();
+    return `<div class="sug-detail">
+      <div class="detail-row">
+        <span class="detail-val">${esc(p.labelName || '')}</span>
+        <span class="arrow">→</span>
+        <span class="detail-val">${esc(dest)}</span>
+      </div>
+    </div>`;
+  }
+  if (s.type === 'group') {
+    const children = (p.childNames || []).map(n => `<span class="detail-val">${esc(n)}</span>`).join(', ');
+    return `<div class="sug-detail">
+      <div class="detail-row"><span class="detail-lbl">New folder:</span><span class="detail-val">${esc(p.newParentName || '')}</span></div>
+      <div class="detail-row"><span class="detail-lbl">Move under it:</span>${children}</div>
+    </div>`;
+  }
+  return '';
+}
 
 function renderSuggestions() {
   const el = document.getElementById('ai-suggestions');
@@ -661,14 +721,17 @@ function renderSuggestions() {
   el.innerHTML = suggestions.map((s, i) => {
     const isAcc = accepted.has(i), isSki = skipped.has(i);
     return `<div class="sug-card${isAcc ? ' accepted' : ''}${isSki ? ' skipped' : ''}" id="sug-${i}">
-      <span class="sug-type ${TYPE_CLS[s.type] || ''}">${s.type}</span>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span class="sug-type ${TYPE_CLS[s.type] || ''}"><i class="bi ${TYPE_ICON[s.type]||''} me-1"></i>${s.type}</span>
+      </div>
       <div class="sug-desc">${esc(s.description)}</div>
       <div class="sug-reason">${esc(s.reason)}</div>
+      ${sugDetail(s)}
       <div class="sug-btns">
         <button class="btn-accept${isAcc ? ' active' : ''}" onclick="toggleAccept(${i})">
           <i class="bi bi-check-lg"></i> ${isAcc ? 'Accepted' : 'Accept'}
         </button>
-        <button class="btn-skip" onclick="skipSug(${i})"><i class="bi bi-x-lg"></i> Skip</button>
+        <button class="btn-skip" onclick="skipSug(${i})"><i class="bi bi-x"></i> Skip</button>
       </div>
     </div>`;
   }).join('');
@@ -687,14 +750,15 @@ function skipSug(i) {
 
 function updateApplyBtn() {
   const n = accepted.size;
-  document.getElementById('accepted-label').textContent = `${n} accepted`;
+  document.getElementById('accepted-count').textContent = n;
   document.getElementById('btn-apply').disabled = n === 0;
 }
 
 async function applyAccepted() {
   const ops = [...accepted].sort((a,b) => a-b).map(i => suggestions[i]);
   if (!ops.length) return;
-  showLog();
+  // Make sure log is visible
+  document.getElementById('scan-debugger').style.display = 'block';
   log(`Applying ${ops.length} operation(s)…`);
   document.getElementById('btn-apply').disabled = true;
 
@@ -728,37 +792,20 @@ async function applyAccepted() {
   document.getElementById('btn-apply').disabled = accepted.size === 0;
 }
 
-// ── Console log (same API as dashboard) ──────────────────────────────────
-function showLog() {
-  const el = document.getElementById('scan-debugger');
-  el.classList.add('visible');
-  el.innerHTML = '';
-  logVisible = true;
-  document.getElementById('log-toggle-label').textContent = 'Hide System Logs';
-}
-
+// ── Console log (identical to dashboard's logToScanDebugger) ─────────────
 function toggleLog() {
-  const el = document.getElementById('scan-debugger');
-  logVisible = !logVisible;
-  el.classList.toggle('visible', logVisible);
-  document.getElementById('log-toggle-label').textContent = logVisible ? 'Hide System Logs' : 'Show System Logs';
+  const logWin = document.getElementById('scan-debugger');
+  logWin.style.display = (logWin.style.display === 'none' || logWin.style.display === '') ? 'block' : 'none';
 }
 
 function log(msg, type = 'info') {
-  const el = document.getElementById('scan-debugger');
-  el.classList.add('visible');
-  logVisible = true;
-  document.getElementById('log-toggle-label').textContent = 'Hide System Logs';
-  const now = new Date();
-  const ts  = `[${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())} AM]`;
+  const consoleWin = document.getElementById('scan-debugger');
   const line = document.createElement('div');
   line.className = `log-${type}`;
-  line.textContent = `${ts} ${msg}`;
-  el.appendChild(line);
-  el.scrollTop = el.scrollHeight;
+  line.innerText = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  consoleWin.appendChild(line);
+  consoleWin.scrollTop = consoleWin.scrollHeight;
 }
-
-function pad(n) { return String(n).padStart(2, '0'); }
 
 // ── Util ──────────────────────────────────────────────────────────────────
 function esc(s) {

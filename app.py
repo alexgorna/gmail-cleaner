@@ -565,7 +565,7 @@ def api_ai_reorganize():
         payload = {
             'model': 'deepseek-chat',
             'temperature': 0.3,
-            'max_tokens': 2000,
+            'max_tokens': 4000,
             'response_format': {'type': 'json_object'},
             'messages': [
                 {'role': 'system', 'content': 'You are a Gmail label organizer. Return only valid JSON, no markdown.'},
@@ -599,17 +599,29 @@ Rules:
             'https://api.deepseek.com/chat/completions',
             headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
             json=payload,
-            timeout=(10, 60)
+            timeout=(10, 90)
         )
         resp.raise_for_status()
-        content = resp.json()['choices'][0]['message']['content'].strip()
-
-        # Strip markdown fences if present
-        if '```' in content:
-            content = content.split('```')[1]
-            if content.startswith('json'):
-                content = content[4:]
+        body   = resp.json()
+        choice = body['choices'][0]
+        finish_reason = choice.get('finish_reason', 'unknown')
+        content = (choice.get('message') or {}).get('content') or ''
         content = content.strip()
+
+        if finish_reason == 'length':
+            return jsonify({'error': f'AI response was truncated (too many labels). Try removing some labels first.'}), 500
+
+        if not content:
+            return jsonify({'error': 'AI returned empty response'}), 500
+
+        # Strip markdown fences robustly (same as ai_labeler._clean_json)
+        import re as _re
+        content = _re.sub(r'^```[a-z]*\s*', '', content)
+        content = _re.sub(r'\s*```$', '', content)
+        content = content.strip()
+        start = content.find('{'); end = content.rfind('}')
+        if start != -1 and end > start:
+            content = content[start:end+1]
 
         parsed      = json.loads(content)
         suggestions = parsed.get('suggestions', parsed) if isinstance(parsed, dict) else parsed

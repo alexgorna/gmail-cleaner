@@ -8,25 +8,30 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
   <style>
-    :root { --primary-bg: #f0f4f8; --accent-color: #0d6efd; }
+    :root {
+        --primary-bg: #f0f4f8;
+        --hero-gradient-start: #e3f2fd;
+        --hero-gradient-end: #bbdefb;
+        --accent-color: #0d6efd;
+    }
     body { background-color: var(--primary-bg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; color: #333; }
 
-    /* ── Navbar (identical to dashboard) ── */
+    /* ── Navbar ── */
     .navbar { background-color: white; box-shadow: 0 1px 2px rgba(0,0,0,0.05); z-index: 10; }
     .user-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; border: 2px solid #fff; box-shadow: 0 0 0 1px #dee2e6; }
 
-    /* ── Hero (matches dashboard gradient) ── */
+    /* ── Hero ── */
     .hero-section {
-      background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
-      padding: 48px 20px 72px;
-      text-align: center;
-      border-bottom: 1px solid #dbeafe;
+        background: linear-gradient(135deg, var(--hero-gradient-start) 0%, var(--hero-gradient-end) 100%);
+        padding: 60px 20px 80px 20px;
+        text-align: center;
+        border-bottom: 1px solid #dbeafe;
     }
-    .hero-title { font-size: 1.8rem; font-weight: 300; color: #1e293b; margin-bottom: 4px; }
+    .hero-title { font-size: 2rem; font-weight: 300; color: #1e293b; margin-bottom: 0; }
     .hero-sub   { font-size: 0.95rem; color: #64748b; margin: 0; }
 
-    /* ── Dashboard container (identical to dashboard) ── */
-    .dashboard-container { margin-top: -46px; padding: 0 20px; margin-bottom: 50px; }
+    /* ── Dashboard container ── */
+    .dashboard-container { margin-top: -50px; padding: 0 20px; margin-bottom: 50px; }
     .content-card {
       background: white;
       border-radius: 12px;
@@ -49,10 +54,10 @@
     }
     .card-toolbar-left  { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .card-toolbar-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .search-wrap { position: relative; }
-    .search-wrap i { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #94a3b8; font-size: 13px; }
-    .search-wrap input { padding: 6px 12px 6px 34px; border-radius: 50px; background: #f8fafc; border: 1px solid #e2e8f0; font-size: 13px; width: 220px; outline: none; }
-    .search-wrap input:focus { background: white; border-color: var(--accent-color); box-shadow: 0 0 0 3px rgba(13,110,253,0.12); }
+    .search-wrap { position: relative; max-width: 500px; width: 100%; }
+    .search-wrap i { position: absolute; left: 15px; top: 50%; transform: translateY(-50%); color: #94a3b8; z-index: 5; }
+    .search-wrap input { padding-left: 40px; border-radius: 50px; background-color: #f8fafc; border: 1px solid #e2e8f0; height: 45px; width: 100%; font-size: inherit; }
+    .search-wrap input:focus { background-color: #fff; box-shadow: 0 0 0 3px rgba(13,110,253,0.15); border-color: var(--accent-color); outline: none; }
 
     /* ── Stats row ── */
     .stats-row {
@@ -173,13 +178,7 @@
     }
 
     /* ── Console (identical to dashboard's .console-window) ── */
-    .console-window {
-      background-color: #1e1e1e; color: #4ade80;
-      font-family: 'SF Mono', Consolas, monospace; font-size: 0.8rem;
-      height: 150px; overflow-y: auto; border-radius: 8px;
-      padding: 15px; margin-top: 10px; display: none;
-      border: 1px solid #333;
-    }
+    .console-window { background-color: #1e1e1e; color: #4ade80; font-family: 'SF Mono', Consolas, monospace; font-size: 0.8rem; height: 150px; overflow-y: auto; border-radius: 8px; padding: 15px; margin-top: 20px; display: none; border: 1px solid #333; }
     .log-error   { color: #ef4444; }
     .log-info    { color: #94a3b8; }
     .log-success { color: #22c55e; }
@@ -228,6 +227,7 @@
 
 <!-- ── Main card ── -->
 <div class="dashboard-container">
+  <div class="container-fluid px-0" style="max-width: 1400px; margin: 0 auto;">
   <div class="content-card">
 
     <!-- Toolbar (mirrors dashboard .controls-wrapper layout) -->
@@ -288,18 +288,20 @@
       </div>
     </div>
 
-    <!-- Console log (identical to dashboard) -->
-    <div class="mt-4 text-center">
-      <button class="btn btn-link text-decoration-none btn-sm text-secondary opacity-75" onclick="toggleLog()">
-        <i class="bi bi-terminal me-1"></i> Show System Logs
-      </button>
-      <div id="scan-debugger" class="console-window text-start mx-auto" style="max-width: 800px;">
-        <div class="log-info">System ready.</div>
-      </div>
-    </div>
+  </div><!-- /.content-card -->
 
+  <!-- Console log — outside the card, identical to main page -->
+  <div class="mt-4 text-center">
+    <button class="btn btn-link text-decoration-none btn-sm text-secondary opacity-75" onclick="toggleLog()">
+      <i class="bi bi-terminal me-1"></i> Show System Logs
+    </button>
+    <div id="scan-debugger" class="console-window text-start mx-auto" style="max-width: 800px;">
+      <div class="log-info">System ready.</div>
+    </div>
   </div>
-</div>
+
+  </div><!-- /.container-fluid -->
+</div><!-- /.dashboard-container -->
 
 <!-- ── Modals ── -->
 

@@ -546,33 +546,34 @@ def api_label_delete():
 
 @app.route('/api/labels/ai_reorganize', methods=['POST'])
 def api_ai_reorganize():
+    import requests as _http
     service = get_service()
     if not service:
         return jsonify({'error': 'Not logged in'}), 401
     try:
-        from openai import OpenAI
+        api_key = os.environ.get('DEEPSEEK_API_KEY')
+        if not api_key:
+            return jsonify({'error': 'Missing DEEPSEEK_API_KEY environment variable.'}), 500
+
         results = service.users().labels().list(userId='me').execute()
         user_labels = [l for l in results.get('labels', []) if l.get('type') == 'user']
         label_names = sorted([l['name'] for l in user_labels])
-        name_to_id = {l['name']: l['id'] for l in user_labels}
+        name_to_id  = {l['name']: l['id'] for l in user_labels}
 
         label_list = '\n'.join(f'- {n}' for n in label_names)
 
-        client = OpenAI(
-            api_key=os.environ.get('DEEPSEEK_API_KEY'),
-            base_url='https://api.deepseek.com'
-        )
-        response = client.chat.completions.create(
-            model='deepseek-chat',
-            temperature=0.3,
-            max_tokens=2000,
-            messages=[
-                {'role': 'system', 'content': 'You are a Gmail label organizer. Return only valid JSON arrays, no markdown.'},
+        payload = {
+            'model': 'deepseek-chat',
+            'temperature': 0.3,
+            'max_tokens': 2000,
+            'response_format': {'type': 'json_object'},
+            'messages': [
+                {'role': 'system', 'content': 'You are a Gmail label organizer. Return only valid JSON, no markdown.'},
                 {'role': 'user', 'content': f"""Analyze these Gmail labels and suggest up to 10 improvements:
 
 {label_list}
 
-Return a JSON array. Each element must be one of these shapes:
+Return a JSON object with a single key "suggestions" containing an array. Each element must be one of:
 
 Merge duplicates:
 {{"type":"merge","description":"short description","reason":"why","params":{{"sourceNames":["A","B"],"targetName":"C"}}}}
@@ -588,23 +589,32 @@ Group flat labels under new parent:
 
 Rules:
 - Only reference label names that appear in the list above exactly as written
-- For merge: sourceNames are deleted and their messages moved to targetName
-- For group: childNames are moved under newParentName (create it if it doesn't exist)
-- Prioritize: 1) merge near-duplicates 2) language/case standardization 3) hierarchy improvements
-- Return ONLY the JSON array"""}
+- For merge: sourceNames are deleted and messages moved to targetName
+- For group: childNames are moved under newParentName (create if needed)
+- Prioritize: 1) merge near-duplicates 2) language/case standardization 3) hierarchy improvements"""}
             ]
+        }
+
+        resp = _http.post(
+            'https://api.deepseek.com/chat/completions',
+            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+            json=payload,
+            timeout=(10, 60)
         )
+        resp.raise_for_status()
+        content = resp.json()['choices'][0]['message']['content'].strip()
 
-        raw = response.choices[0].message.content.strip()
-        if '```' in raw:
-            raw = raw.split('```')[1]
-            if raw.startswith('json'):
-                raw = raw[4:]
-        raw = raw.strip()
+        # Strip markdown fences if present
+        if '```' in content:
+            content = content.split('```')[1]
+            if content.startswith('json'):
+                content = content[4:]
+        content = content.strip()
 
-        suggestions = json.loads(raw)
+        parsed      = json.loads(content)
+        suggestions = parsed.get('suggestions', parsed) if isinstance(parsed, dict) else parsed
 
-        # Attach IDs where we can resolve them upfront
+        # Attach resolved IDs upfront for operations that need them
         for sug in suggestions:
             p = sug.get('params', {})
             if sug['type'] == 'rename':
@@ -613,7 +623,7 @@ Rules:
                 p['labelId'] = name_to_id.get(p.get('labelName'))
             elif sug['type'] == 'merge':
                 p['sourceIds'] = [name_to_id[n] for n in p.get('sourceNames', []) if n in name_to_id]
-                p['targetId'] = name_to_id.get(p.get('targetName'))
+                p['targetId']  = name_to_id.get(p.get('targetName'))
 
         return jsonify({'suggestions': suggestions, 'totalLabels': len(user_labels)})
     except json.JSONDecodeError as e:

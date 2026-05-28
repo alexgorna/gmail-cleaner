@@ -35,16 +35,20 @@
       overflow: hidden;
     }
 
-    /* ── Card toolbar ── */
+    /* ── Card toolbar (matches dashboard .controls-wrapper exactly) ── */
     .card-toolbar {
-      padding: 16px 20px;
+      padding: 20px;
       border-bottom: 1px solid #f1f5f9;
+      background-color: #fff;
+      min-height: 85px;
       display: flex;
+      justify-content: space-between;
       align-items: center;
-      gap: 10px;
       flex-wrap: wrap;
+      gap: 10px;
     }
-    .card-toolbar-right { margin-left: auto; display: flex; gap: 8px; }
+    .card-toolbar-left  { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .card-toolbar-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .search-wrap { position: relative; }
     .search-wrap i { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: #94a3b8; font-size: 13px; }
     .search-wrap input { padding: 6px 12px 6px 34px; border-radius: 50px; background: #f8fafc; border: 1px solid #e2e8f0; font-size: 13px; width: 220px; outline: none; }
@@ -226,19 +230,23 @@
 <div class="dashboard-container">
   <div class="content-card">
 
-    <!-- Toolbar -->
+    <!-- Toolbar (mirrors dashboard .controls-wrapper layout) -->
     <div class="card-toolbar">
-      <div class="search-wrap">
-        <i class="bi bi-search"></i>
-        <input type="search" id="search-input" placeholder="Search labels…" oninput="filterTree(this.value)">
+      <div class="card-toolbar-left">
+        <div class="search-wrap">
+          <i class="bi bi-search"></i>
+          <input type="search" id="search-input" placeholder="Search labels…" oninput="filterTree(this.value)">
+        </div>
       </div>
       <div class="card-toolbar-right">
-        <button class="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1" onclick="showNewLabelModal()">
-          <i class="bi bi-plus-lg"></i> New label
+        <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small" onclick="showNewLabelModal()">
+          <i class="bi bi-plus-lg me-1"></i> New label
         </button>
-        <button class="btn btn-sm d-flex align-items-center gap-1" id="btn-ai"
-          style="border:1px solid #c4b5fd;background:#f5f3ff;color:#6d28d9" onclick="toggleAIPanel()">
-          <i class="bi bi-stars"></i> AI Reorganize
+        <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small" id="btn-ai" onclick="toggleAIPanel()">
+          <i class="bi bi-stars me-1"></i> AI Reorganize
+        </button>
+        <button id="btn-apply" class="btn btn-primary rounded-pill px-4 py-2 small fw-bold" onclick="applyAccepted()" disabled>
+          Apply Changes
         </button>
       </div>
     </div>
@@ -274,20 +282,18 @@
           </div>
           <div class="ai-footer">
             <span class="accepted-badge" id="accepted-label"><i class="bi bi-check-circle-fill"></i> <span id="accepted-count">0</span> accepted</span>
-            <button class="btn btn-primary btn-sm fw-semibold" id="btn-apply" onclick="applyAccepted()" disabled style="padding:6px 16px;border-radius:8px">
-              <i class="bi bi-check2-all me-1"></i> Apply Changes
-            </button>
+            <span class="text-muted small">Use <strong>Apply Changes</strong> above ↗</span>
           </div>
         </div>
       </div>
     </div>
 
     <!-- Console log (identical to dashboard) -->
-    <div style="padding:10px 20px 16px">
+    <div class="mt-4 text-center">
       <button class="btn btn-link text-decoration-none btn-sm text-secondary opacity-75" onclick="toggleLog()">
         <i class="bi bi-terminal me-1"></i> Show System Logs
       </button>
-      <div id="scan-debugger" class="console-window text-start mx-auto" style="max-width:800px">
+      <div id="scan-debugger" class="console-window text-start mx-auto" style="max-width: 800px;">
         <div class="log-info">System ready.</div>
       </div>
     </div>
@@ -651,6 +657,7 @@ async function runAIAnalysis() {
   document.getElementById('ai-suggestions').innerHTML =
     `<div class="ai-placeholder"><span class="spinner"></span><br><br>Analysing ${flatAll.length} label names…</div>`;
   suggestions = []; accepted.clear(); skipped.clear(); updateApplyBtn();
+  log(`AI: sending ${flatAll.length} labels to DeepSeek…`, 'info');
 
   try {
     const res  = await fetch('/api/labels/ai_reorganize', {

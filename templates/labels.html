@@ -155,11 +155,15 @@
       background: rgba(0,0,0,0.03); border: 1px solid #e2e8f0;
       font-size: 12px; line-height: 1.5;
     }
-    .sug-detail .detail-row { display: flex; align-items: baseline; gap: 5px; margin-bottom: 2px; }
-    .sug-detail .detail-row:last-child { margin-bottom: 0; }
-    .sug-detail .detail-lbl { color: #94a3b8; font-size: 11px; flex-shrink: 0; }
-    .sug-detail .detail-val { color: #1e293b; font-family: 'SF Mono', Consolas, monospace; font-size: 11px; word-break: break-all; }
+    /* Single-value rows (rename, move, merge "Into") */
+    .sug-detail .detail-kv { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+    .sug-detail .detail-lbl { color: #94a3b8; font-size: 11px; flex-shrink: 0; white-space: nowrap; }
+    .sug-detail .detail-val { color: #1e293b; font-family: 'SF Mono', Consolas, monospace; font-size: 11px; word-break: break-word; }
     .sug-detail .arrow { color: #94a3b8; font-size: 13px; flex-shrink: 0; }
+    /* Stacked list for multiple labels (merge sources, group children) */
+    .detail-list { margin-top: 3px; max-height: 96px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 5px; background: white; }
+    .detail-list-item { font-family: 'SF Mono', Consolas, monospace; font-size: 11px; color: #1e293b; padding: 3px 8px; border-bottom: 1px solid #f1f5f9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .detail-list-item:last-child { border-bottom: none; }
     .sug-btns   { display: flex; gap: 6px; margin-top: 10px; }
     .btn-accept { font-size: 12px; padding: 5px 12px; border-radius: 6px; border: 1px solid #86efac; background: #f0fdf4; color: #15803d; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; font-weight: 500; }
     .btn-accept.active { background: #22c55e; color: white; border-color: #22c55e; }
@@ -683,41 +687,54 @@ async function runAIAnalysis() {
 const TYPE_CLS  = { merge: 'type-merge', rename: 'type-rename', move: 'type-move', group: 'type-group' };
 const TYPE_ICON = { merge: 'bi-diagram-2', rename: 'bi-pencil', move: 'bi-folder-symlink', group: 'bi-collection' };
 
+function labelList(names) {
+  // Renders a scrollable stacked list of label names — readable regardless of count
+  const items = names.map(n => `<div class="detail-list-item">${esc(n)}</div>`).join('');
+  return `<div class="detail-list">${items}</div>`;
+}
+
 function sugDetail(s) {
   const p = s.params || {};
+
   if (s.type === 'merge') {
-    const sources = (p.sourceNames || []).map(n => `<span class="detail-val">${esc(n)}</span>`).join('<span class="arrow">+</span>');
+    const sources = p.sourceNames || [];
     return `<div class="sug-detail">
-      <div class="detail-row"><span class="detail-lbl">Merge:</span>${sources}</div>
-      <div class="detail-row"><span class="detail-lbl">Into:</span><span class="detail-val">${esc(p.targetName || '')}</span></div>
+      <div class="detail-kv"><span class="detail-lbl">Merge:</span>${labelList(sources)}</div>
+      <div class="detail-kv" style="margin-top:6px"><span class="detail-lbl">Into:</span><span class="detail-val">${esc(p.targetName || '')}</span></div>
     </div>`;
   }
+
   if (s.type === 'rename') {
     return `<div class="sug-detail">
-      <div class="detail-row">
+      <div class="detail-kv">
         <span class="detail-val">${esc(p.oldName || '')}</span>
         <span class="arrow">→</span>
         <span class="detail-val">${esc(p.newName || '')}</span>
       </div>
     </div>`;
   }
+
   if (s.type === 'move') {
-    const dest = p.newParentName ? `${p.newParentName}/${(p.labelName||'').split('/').pop()}` : (p.labelName||'').split('/').pop();
+    const dest = p.newParentName
+      ? `${p.newParentName}/${(p.labelName||'').split('/').pop()}`
+      : (p.labelName||'').split('/').pop();
     return `<div class="sug-detail">
-      <div class="detail-row">
+      <div class="detail-kv">
         <span class="detail-val">${esc(p.labelName || '')}</span>
         <span class="arrow">→</span>
         <span class="detail-val">${esc(dest)}</span>
       </div>
     </div>`;
   }
+
   if (s.type === 'group') {
-    const children = (p.childNames || []).map(n => `<span class="detail-val">${esc(n)}</span>`).join(', ');
+    const children = p.childNames || [];
     return `<div class="sug-detail">
-      <div class="detail-row"><span class="detail-lbl">New folder:</span><span class="detail-val">${esc(p.newParentName || '')}</span></div>
-      <div class="detail-row"><span class="detail-lbl">Move under it:</span>${children}</div>
+      <div class="detail-kv"><span class="detail-lbl">New folder:</span><span class="detail-val">${esc(p.newParentName || '')}</span></div>
+      <div class="detail-kv" style="margin-top:6px"><span class="detail-lbl">Move under it:</span>${labelList(children)}</div>
     </div>`;
   }
+
   return '';
 }
 

@@ -707,15 +707,32 @@ def api_labels_apply_plan():
                 elif op_type == 'merge':
                     source_names = p.get('sourceNames', [])
                     target_name = p.get('targetName')
-                    # Ensure target label exists
+                    # Ensure target label exists — exact match first, then case-insensitive fallback
                     target_label = name_map.get(target_name)
                     if not target_label:
-                        target_label = service.users().labels().create(
-                            userId='me', body={'name': target_name,
-                                               'labelListVisibility': 'labelShow',
-                                               'messageListVisibility': 'show'}
-                        ).execute()
-                        yield json.dumps({'msg': f'  + Created label "{target_name}"'}) + '\n'
+                        lower = target_name.lower()
+                        target_label = next((l for n, l in name_map.items() if n.lower() == lower), None)
+                    if target_label:
+                        yield json.dumps({'msg': f'  → Using existing label "{target_label["name"]}"'}) + '\n'
+                    else:
+                        try:
+                            target_label = service.users().labels().create(
+                                userId='me', body={'name': target_name,
+                                                   'labelListVisibility': 'labelShow',
+                                                   'messageListVisibility': 'show'}
+                            ).execute()
+                            yield json.dumps({'msg': f'  + Created label "{target_name}"'}) + '\n'
+                        except HttpError as e:
+                            if e.resp.status == 409:
+                                # Label already exists (race / case mismatch) — re-fetch and find it
+                                name_map, id_map = get_label_map()
+                                target_label = name_map.get(target_name) or next(
+                                    (l for n, l in name_map.items() if n.lower() == target_name.lower()), None)
+                                if target_label:
+                                    yield json.dumps({'msg': f'  → Found existing label "{target_label["name"]}"'}) + '\n'
+                            if not target_label:
+                                yield json.dumps({'msg': f'  ⚠ Could not find or create target label "{target_name}", skipping.'}) + '\n'
+                                continue
 
                     merged = 0
                     for src_name in source_names:

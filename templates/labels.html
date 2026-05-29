@@ -773,12 +773,19 @@ function renderSuggestions() {
   }
   el.innerHTML = suggestions.map((s, i) => {
     const isAcc = accepted.has(i), isSki = skipped.has(i), isApp = applied.has(i);
+    const p = s.params || {};
+    // For merge: compute description from params so it always matches the actual operation
+    let displayDesc = s.description;
+    if (s.type === 'merge' && p.sourceNames && p.targetName) {
+      const srcs = p.sourceNames.join(', ');
+      displayDesc = `Merge "${srcs}" into "${p.targetName}" — source label(s) deleted, emails moved to target.`;
+    }
     return `<div class="sug-card${isApp ? ' applied' : isAcc ? ' accepted' : ''}${isSki ? ' skipped' : ''}" id="sug-${i}">
       <div style="display:flex;align-items:center;gap:6px">
         <span class="sug-type ${TYPE_CLS[s.type] || ''}"><i class="bi ${TYPE_ICON[s.type]||''} me-1"></i>${s.type}</span>
         ${isApp ? '<span style="margin-left:auto;font-size:11px;color:#15803d;font-weight:600"><i class="bi bi-check-circle-fill"></i> Applied</span>' : ''}
       </div>
-      <div class="sug-desc">${esc(s.description)}</div>
+      <div class="sug-desc">${esc(displayDesc)}</div>
       <div class="sug-reason">${esc(s.reason)}</div>
       ${sugDetail(s)}
       ${isApp ? '' : `<div class="sug-btns">

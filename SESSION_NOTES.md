@@ -720,3 +720,36 @@ async function submitRename(...) {
 
 **Files changed:** `app.py`, `templates/labels.html`
 **Commits:** `5796fad`, `61345fc`, `6548a60`, `a6d33d0`, `23d4777`, `e413d4a`
+
+---
+
+### 28. Fix — Rename Timeout + Cascade Verification (May 29 2026)
+
+**Problem:** Renaming a label showed "Renamed X → Y" in the system log but Gmail did not actually change the label name. Root cause: the `api_label_rename` endpoint was calling `service.users().labels().get()` as a pre-fetch step to read the old label name — this extra round-trip was timing out on Railway, causing the entire request to fail. Because the timeout returned a JSON error body `{"error": "The read operation timed out"}`, the frontend `res.json()` parsed it successfully and `data.error` was truthy — but earlier test showed it logged success, suggesting the error path had a separate issue.
+
+**Fix:**
+- Removed the unnecessary `labels().get()` pre-fetch — the client already knows `oldFullName` and sends it in the request body
+- Backend now expects `oldFullName` from the client alongside `labelId` and `newFullName`
+- Added post-patch verification: after `labels().patch()`, checks that `updated.get('name') == new_full_name`; returns a 500 error if Gmail didn't apply the rename
+- Frontend `submitRename` updated to send `oldFullName` in the request body
+
+**Cascade behavior (already correct, confirmed):**
+When renaming a parent label (e.g. "Banco" → "Banks"), the endpoint:
+1. Fetches all labels once via `labels().list()`
+2. Finds every child whose name starts with `"Banco/"` (e.g. "Banco/Savings", "Banco/Credit Card")
+3. Renames each child in parallel (ThreadPoolExecutor, 5 workers): replaces prefix → "Banks/Savings", "Banks/Credit Card"
+4. Then renames the parent itself
+5. Returns `childrenRenamed` count to client for display in the log
+
+**Pending UX redesign (discussed, not yet implemented):**
+User identified that the labels page acts immediately on every tree action (pencil → rename fires instantly, trash → delete fires after one confirm modal) — this is the opposite of the dashboard pattern where you select actions across rows and click a single Apply Changes at the end.
+
+Proposed redesign:
+- Pencil/Move/Delete add ops to a `pendingManualOps` queue instead of executing immediately
+- Tree nodes show visual indicators for pending changes (strikethrough for delete, arrow for rename, etc.)
+- Toolbar shows "N pending changes" pill when queue is non-empty
+- Single Apply Changes button handles both AI suggestions and manual pending ops via streaming endpoint
+- Each pending op can be cancelled from the tree node before applying
+
+**Files changed:** `app.py`, `templates/labels.html`
+**Commits:** `2d93821`, `68adc51`

@@ -474,8 +474,19 @@ def api_labels_tree():
     try:
         results = service.users().labels().list(userId='me').execute()
         user_labels = [l for l in results.get('labels', []) if l.get('type') == 'user']
-        tree = build_label_tree(user_labels)
-        flat = {l['id']: l for l in user_labels}
+
+        # Fetch full label details (including messagesTotal) in parallel
+        def fetch_detail(label):
+            try:
+                return service.users().labels().get(userId='me', id=label['id']).execute()
+            except Exception:
+                return label  # fallback to list data if get fails
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            detailed = list(executor.map(fetch_detail, user_labels))
+
+        tree = build_label_tree(detailed)
+        flat = {l['id']: l for l in detailed}
         return jsonify({'tree': tree, 'flat': flat})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

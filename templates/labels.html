@@ -97,7 +97,7 @@
     .toggle-btn:hover { background: #e2e8f0; }
     .tree-icon { font-size: 14px; margin-right: 7px; flex-shrink: 0; }
     .tree-name { flex: 1; font-size: 13px; color: #334155; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-    .tree-count { font-size: 11px; color: #94a3b8; margin-right: 6px; flex-shrink: 0; }
+    .label-msg-count { font-size: 11px; color: #94a3b8; margin-left: 5px; font-weight: 400; }
     .tree-actions { display: none; gap: 2px; flex-shrink: 0; }
     .tree-item:hover .tree-actions { display: flex; }
     .tree-btn {
@@ -472,8 +472,7 @@ function renderTree() {
           ? `<input class="rename-input" id="ri-${node.id}" value="${esc(node.name)}"
                onkeydown="handleRenameKey(event,'${node.id}','${esc(node.fullName)}')"
                onblur="cancelRename()" onclick="event.stopPropagation()">`
-          : `<span class="tree-name" title="${esc(node.fullName)}">${hlText(node.name, search)}</span>`}
-        ${node.messagesTotal ? `<span class="tree-count">${node.messagesTotal}</span>` : ''}
+          : `<span class="tree-name" title="${esc(node.fullName)}">${hlText(node.name, search)}${node.messagesTotal ? `<span class="label-msg-count">(${node.messagesTotal})</span>` : ''}</span>`}
         ${!isRename ? `<div class="tree-actions">
           <button class="tree-btn" title="Rename" onclick="startRename('${node.id}','${esc(node.fullName)}',event)"><i class="bi bi-pencil"></i></button>
           <button class="tree-btn" title="Move to…" onclick="showMoveModal('${node.id}','${esc(node.fullName)}',event)"><i class="bi bi-arrows-move"></i></button>

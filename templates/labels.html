@@ -379,6 +379,7 @@ let treeData   = [];
 let flatAll    = [];
 let expanded   = new Set();
 let renamingId = null;
+let renameSubmitting = false;
 let filterText = '';
 let pendingDelete = null;
 let pendingMove   = null;
@@ -522,7 +523,7 @@ function toggleExpand(id, e) {
 
 // ── Rename ────────────────────────────────────────────────────────────────
 function startRename(id, fullName, e) { e.stopPropagation(); renamingId = id; renderTree(); }
-function cancelRename() { renamingId = null; renderTree(); }
+function cancelRename() { if (renameSubmitting) return; renamingId = null; renderTree(); }
 
 function handleRenameKey(e, id, fullName) {
   if (e.key === 'Escape') { cancelRename(); return; }
@@ -537,7 +538,9 @@ function handleRenameKey(e, id, fullName) {
 }
 
 async function submitRename(id, oldFull, newFull) {
+  renameSubmitting = true;
   renamingId = null; renderTree();
+  renameSubmitting = false;
   try {
     const res  = await fetch('/api/labels/rename', {
       method: 'POST', headers: csrfHeaders(),

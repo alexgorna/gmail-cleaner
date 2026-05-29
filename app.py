@@ -597,21 +597,24 @@ def api_ai_reorganize():
         user_labels = [l for l in results.get('labels', []) if l.get('type') == 'user']
         label_names = sorted([l['name'] for l in user_labels])
         name_to_id  = {l['name']: l['id'] for l in user_labels}
+        label_set   = set(label_names)
 
-        label_list = '\n'.join(f'- {n}' for n in label_names)
+        import re as _re
 
-        payload = {
-            'model': 'deepseek-chat',
-            'temperature': 0.3,
-            'max_tokens': 4000,
-            'response_format': {'type': 'json_object'},
-            'messages': [
-                {'role': 'system', 'content': 'You are a Gmail label organizer. Return only valid JSON, no markdown.'},
-                {'role': 'user', 'content': f"""Analyze these Gmail labels and suggest up to 10 improvements:
+        SYSTEM_PROMPT = 'You are a Gmail label organizer. Return only valid JSON, no markdown.'
 
+        def make_user_prompt(chunk_names, all_names):
+            label_list = '\n'.join(f'- {n}' for n in chunk_names)
+            full_list  = '\n'.join(f'- {n}' for n in all_names)
+            return f"""You are analyzing a SUBSET of {len(all_names)} total Gmail labels. Suggest improvements ONLY for labels in the SUBSET below. You may reference any label from the FULL LIST as a merge target or parent.
+
+SUBSET TO ANALYZE:
 {label_list}
 
-Return a JSON object with a single key "suggestions" containing an array. Each element must be one of:
+FULL LABEL LIST (for context — do NOT suggest changes to labels not in the SUBSET):
+{full_list}
+
+Return a JSON object with a single key "suggestions" containing an array (may be empty). Each element must be one of:
 
 Merge duplicates:
 {{"type":"merge","description":"short description","reason":"why","params":{{"sourceNames":["A","B"],"targetName":"C"}}}}
@@ -649,46 +652,61 @@ MERGE RULES (most important — merges are irreversible and destructive):
 - sourceNames are permanently deleted and their emails moved to targetName — this cannot be undone.
 
 GENERAL:
-- Only reference label names that appear in the list above exactly as written.
+- Only reference label names that appear in the FULL LIST exactly as written.
 - For group: childNames must all be flat labels (no "/") not yet nested.
 - Prioritize: 1) merge only obvious exact-same duplicates 2) fix obvious inconsistencies 3) hierarchy improvements.
 - When in doubt, omit the suggestion — fewer high-confidence suggestions are better than many guesses.
-- NEVER include a suggestion entry to explain why you are NOT doing something. If you decide to skip an action, simply do not include it. No "no change needed", no "skipping", no commentary entries. Every object in the suggestions array must be a real, executable action with fully populated params."""}
-            ]
-        }
+- NEVER include a suggestion entry to explain why you are NOT doing something. If you decide to skip an action, simply do not include it. No "no change needed", no "skipping", no commentary entries. Every object in the suggestions array must be a real, executable action with fully populated params."""
 
-        resp = _http.post(
-            'https://api.deepseek.com/chat/completions',
-            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
-            json=payload,
-            timeout=(10, 90)
-        )
-        resp.raise_for_status()
-        body   = resp.json()
-        choice = body['choices'][0]
-        finish_reason = choice.get('finish_reason', 'unknown')
-        content = (choice.get('message') or {}).get('content') or ''
-        content = content.strip()
+        def call_deepseek(chunk_names):
+            payload = {
+                'model': 'deepseek-chat',
+                'temperature': 0.3,
+                'max_tokens': 2000,
+                'response_format': {'type': 'json_object'},
+                'messages': [
+                    {'role': 'system', 'content': SYSTEM_PROMPT},
+                    {'role': 'user', 'content': make_user_prompt(chunk_names, label_names)}
+                ]
+            }
+            resp = _http.post(
+                'https://api.deepseek.com/chat/completions',
+                headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                json=payload,
+                timeout=(10, 90)
+            )
+            resp.raise_for_status()
+            body   = resp.json()
+            choice = body['choices'][0]
+            content = (choice.get('message') or {}).get('content') or ''
+            content = content.strip()
+            if not content:
+                return []
+            content = _re.sub(r'^```[a-z]*\s*', '', content)
+            content = _re.sub(r'\s*```$', '', content)
+            content = content.strip()
+            s = content.find('{'); e = content.rfind('}')
+            if s != -1 and e > s:
+                content = content[s:e+1]
+            parsed = json.loads(content)
+            return parsed.get('suggestions', []) if isinstance(parsed, dict) else []
 
-        if finish_reason == 'length':
-            return jsonify({'error': f'AI response was truncated (too many labels). Try removing some labels first.'}), 500
+        # Split labels into chunks of ~80 to reduce hallucination rate
+        CHUNK_SIZE = 80
+        all_suggestions_raw = []
+        for i in range(0, len(label_names), CHUNK_SIZE):
+            chunk = label_names[i:i + CHUNK_SIZE]
+            try:
+                chunk_sugs = call_deepseek(chunk)
+                all_suggestions_raw.extend(chunk_sugs)
+            except Exception as chunk_err:
+                # Log and continue with remaining chunks
+                app.logger.warning(f'AI chunk {i//CHUNK_SIZE+1} failed: {chunk_err}')
+            if i + CHUNK_SIZE < len(label_names):
+                time.sleep(0.5)  # brief pause between chunks
 
-        if not content:
-            return jsonify({'error': 'AI returned empty response'}), 500
-
-        # Strip markdown fences robustly (same as ai_labeler._clean_json)
-        import re as _re
-        content = _re.sub(r'^```[a-z]*\s*', '', content)
-        content = _re.sub(r'\s*```$', '', content)
-        content = content.strip()
-        start = content.find('{'); end = content.rfind('}')
-        if start != -1 and end > start:
-            content = content[start:end+1]
-
-        parsed      = json.loads(content)
-        suggestions = parsed.get('suggestions', parsed) if isinstance(parsed, dict) else parsed
-
-        label_set = set(label_names)
+        suggestions = all_suggestions_raw
+        label_set   = set(label_names)
 
         # Validate every suggestion — drop any that reference a non-existent label name
         valid = []

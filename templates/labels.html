@@ -669,9 +669,14 @@ async function confirmNewLabel() {
 
 // ── AI Panel ──────────────────────────────────────────────────────────────
 function toggleAIPanel() {
-  aiOpen = !aiOpen;
-  document.getElementById('ai-panel').classList.toggle('open', aiOpen);
-  if (aiOpen) runAIAnalysis();
+  if (aiOpen) {
+    // Already open — re-run analysis instead of closing
+    runAIAnalysis();
+  } else {
+    aiOpen = true;
+    document.getElementById('ai-panel').classList.add('open');
+    runAIAnalysis();
+  }
 }
 
 async function runAIAnalysis() {

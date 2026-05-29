@@ -697,6 +697,9 @@ function sugDetail(s) {
     return `<div class="sug-detail">
       <div class="detail-kv"><span class="detail-lbl">Merge:</span>${labelList(sources)}</div>
       <div class="detail-kv" style="margin-top:6px"><span class="detail-lbl">Into:</span><span class="detail-val">${esc(p.targetName || '')}</span></div>
+      <div style="margin-top:8px;padding:6px 8px;background:#fff5f5;border:1px solid #fca5a5;border-radius:6px;font-size:11px;color:#b91c1c;line-height:1.4">
+        <i class="bi bi-exclamation-triangle-fill me-1"></i><strong>Destructive & irreversible.</strong> Source labels are permanently deleted and all their emails folded into the target. Cannot be undone.
+      </div>
     </div>`;
   }
 

@@ -786,6 +786,27 @@ def api_labels_apply_plan():
                         service.users().labels().delete(userId='me', id=src['id']).execute()
                         merged += len(msgs)
 
+                        # Update any Gmail filters that applied the now-deleted source label
+                        try:
+                            all_filters = service.users().settings().filters().list(userId='me').execute().get('filter', [])
+                            filters_updated = 0
+                            for f in all_filters:
+                                action = f.get('action', {})
+                                add_ids = action.get('addLabelIds', [])
+                                if src['id'] in add_ids:
+                                    # Replace source ID with target ID
+                                    new_add_ids = [target_label['id'] if lid == src['id'] else lid for lid in add_ids]
+                                    new_action = dict(action)
+                                    new_action['addLabelIds'] = new_add_ids
+                                    new_filter_body = {'criteria': f.get('criteria', {}), 'action': new_action}
+                                    service.users().settings().filters().delete(userId='me', id=f['id']).execute()
+                                    service.users().settings().filters().create(userId='me', body=new_filter_body).execute()
+                                    filters_updated += 1
+                            if filters_updated:
+                                yield json.dumps({'msg': f'  ↻ Updated {filters_updated} filter(s) to use "{target_name}"'}) + '\n'
+                        except Exception as fe:
+                            yield json.dumps({'msg': f'  ⚠ Could not update filters for "{src_name}": {fe}'}) + '\n'
+
                     yield json.dumps({'status': 'op_complete', 'type': op_type,
                                       'msg': f'  ✓ Merged {len(source_names)} label(s) into "{target_name}" ({merged} messages)'}) + '\n'
 

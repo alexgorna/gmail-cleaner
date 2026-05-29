@@ -587,17 +587,27 @@ Move to better parent:
 Group flat labels under new parent:
 {{"type":"group","description":"short description","reason":"why","params":{{"newParentName":"A","childNames":["B","C","D"]}}}}
 
-CRITICAL HIERARCHY RULE:
-- The "/" character is a hierarchy separator. "Germany/Berlin" means "Berlin" is ALREADY nested inside a "Germany" folder.
-- NEVER suggest grouping or moving labels that already share a common prefix — they are already organized.
-- A "group" suggestion is only valid for labels that have NO "/" and could benefit from being nested.
-- A "move" suggestion is only valid if the label is genuinely in the wrong parent.
+CRITICAL RULES — violating any of these is worse than making no suggestion:
 
-Rules:
-- Only reference label names that appear in the list above exactly as written
-- For merge: sourceNames are deleted and messages moved to targetName
-- For group: childNames must all be flat labels (no "/") that are not yet nested
-- Prioritize: 1) merge near-duplicates 2) language/case standardization 3) hierarchy improvements"""}
+HIERARCHY:
+- "/" is a nesting separator. "Aluguel/Boleto" means "Boleto" is already inside "Aluguel".
+- If a label already has children (other labels starting with "LabelName/"), it is already a parent folder — never suggest moving or grouping it under itself.
+- Never suggest a move or group where the source and destination are identical.
+- A "group" suggestion is only valid for genuinely flat labels (no "/" in their name) that are not yet nested anywhere.
+- A "move" suggestion is only valid if the label is genuinely misplaced under the wrong parent.
+
+DOT PREFIX:
+- Labels starting with "." (e.g. ".Arquivo", ".Sanitize") use the dot intentionally to pin them to the top of the Gmail label list. NEVER suggest renaming or moving them.
+
+ABBREVIATIONS:
+- Never suggest expanding or renaming labels that are short abbreviations (1-4 characters, or all-caps like "DB", "DM", "AG") — their meaning is unknown and renaming them would be destructive.
+
+GENERAL:
+- Only reference label names that appear in the list above exactly as written.
+- For merge: sourceNames are deleted and messages moved to targetName.
+- For group: childNames must all be flat labels (no "/") not yet nested.
+- Prioritize: 1) merge clear duplicates 2) fix obvious inconsistencies 3) hierarchy improvements.
+- When in doubt, omit the suggestion — fewer high-confidence suggestions are better than many guesses."""}
             ]
         }
 

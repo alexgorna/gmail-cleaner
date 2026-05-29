@@ -603,9 +603,10 @@ ABBREVIATIONS:
 - Never suggest expanding or renaming labels that are short abbreviations (1-4 characters, or all-caps like "DB", "DM", "AG") — their meaning is unknown and renaming them would be destructive.
 
 MERGE RULES (most important — merges are irreversible and destructive):
-- NEVER merge labels that represent different companies, products, services, or people. For example: "1Password" and "Bitwarden" are competing products — merging them destroys the distinction. "Amazon" and "Mercado Livre" are different stores — never merge.
-- Only suggest a merge when the labels clearly refer to the EXACT SAME thing: e.g., "Amazon" and "amazon" (same name, different case), or "Gmail" and "Google Mail" (same service, two names).
-- When in doubt about a merge, NEVER suggest it. Use a "group" or "move" instead if they belong together under a parent folder.
+- NEVER merge a child label into its own parent or any ancestor. "Aluguel/CondLink" into "Aluguel", "E-Commerce/eBay" into "E-Commerce", "Viagens/SIXT" into "Viagens" — these are all forbidden. The child label exists precisely to separate those emails from the parent bucket. Merging destroys that separation.
+- NEVER merge labels that represent different companies, products, services, or people. "Amazon" and "eBay" are different stores. "1Password" and "Bitwarden" are different products. Each sub-label under a parent is a distinct entity — never merge them together or into the parent.
+- Only suggest a merge when two labels at the SAME level refer to the EXACT SAME thing with no organizational distinction: e.g., "Amazon" and "amazon" (identical, different case), or "Gmail" and "Google Mail" (two names for one service with zero distinction).
+- When in doubt about a merge, NEVER suggest it. Use a "move" instead if a label is under the wrong parent.
 - sourceNames are permanently deleted and their emails moved to targetName — this cannot be undone.
 
 GENERAL:
@@ -758,6 +759,10 @@ def api_labels_apply_plan():
                     merged = 0
                     for src_name in source_names:
                         if src_name == target_name:
+                            continue
+                        # Safety guard: never merge a child into its own parent/ancestor
+                        if src_name.startswith(target_name + '/') or target_name.startswith(src_name + '/'):
+                            yield json.dumps({'msg': f'  ⛔ Blocked: cannot merge "{src_name}" into its parent/ancestor "{target_name}"'}) + '\n'
                             continue
                         src = name_map.get(src_name)
                         if not src:

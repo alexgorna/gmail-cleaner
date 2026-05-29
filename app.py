@@ -691,6 +691,19 @@ def api_labels_apply_plan():
             all_l = [l for l in res.get('labels', []) if l.get('type') == 'user']
             return {l['name']: l for l in all_l}, {l['id']: l for l in all_l}
 
+        def patch_name(label_id, new_name):
+            """Patch a label's name; if Gmail rejects due to invalid color, clear color and retry."""
+            try:
+                return service.users().labels().patch(
+                    userId='me', id=label_id, body={'name': new_name}
+                ).execute()
+            except HttpError as e:
+                if e.resp.status == 400 and 'color' in str(e).lower():
+                    return service.users().labels().patch(
+                        userId='me', id=label_id, body={'name': new_name, 'color': {}}
+                    ).execute()
+                raise
+
         name_map, id_map = get_label_map()
 
         for op in operations:
@@ -707,13 +720,19 @@ def api_labels_apply_plan():
                         yield json.dumps({'msg': f'  ⚠ Rename: "{old_name}" not found, skipping.'}) + '\n'
                         continue
                     children = [(n, l) for n, l in name_map.items() if n.startswith(old_name + '/')]
+                    child_errors = 0
                     for child_name, child_label in children:
                         new_child = new_name + child_name[len(old_name):]
-                        service.users().labels().patch(userId='me', id=child_label['id'], body={'name': new_child}).execute()
-                    service.users().labels().patch(userId='me', id=label['id'], body={'name': new_name}).execute()
+                        try:
+                            patch_name(child_label['id'], new_child)
+                        except Exception as ce:
+                            child_errors += 1
+                            yield json.dumps({'msg': f'  ⚠ Could not rename child "{child_name}": {ce}'}) + '\n'
+                    patch_name(label['id'], new_name)
                     name_map, id_map = get_label_map()
+                    child_note = f' (+ {len(children) - child_errors}/{len(children)} children)' if children else ''
                     yield json.dumps({'status': 'op_complete', 'type': op_type,
-                                      'msg': f'  ✓ Renamed "{old_name}" → "{new_name}"' + (f' (+ {len(children)} child{"ren" if len(children)>1 else ""})' if children else '')}) + '\n'
+                                      'msg': f'  ✓ Renamed "{old_name}" → "{new_name}"{child_note}'}) + '\n'
 
                 elif op_type == 'delete':
                     label_name = p.get('labelName')
@@ -747,8 +766,11 @@ def api_labels_apply_plan():
                     children = [(n, l) for n, l in name_map.items() if n.startswith(label_name + '/')]
                     for child_name, child_label in children:
                         new_child = new_full + child_name[len(label_name):]
-                        service.users().labels().patch(userId='me', id=child_label['id'], body={'name': new_child}).execute()
-                    service.users().labels().patch(userId='me', id=label['id'], body={'name': new_full}).execute()
+                        try:
+                            patch_name(child_label['id'], new_child)
+                        except Exception as ce:
+                            yield json.dumps({'msg': f'  ⚠ Could not move child "{child_name}": {ce}'}) + '\n'
+                    patch_name(label['id'], new_full)
                     name_map, id_map = get_label_map()
                     yield json.dumps({'status': 'op_complete', 'type': op_type,
                                       'msg': f'  ✓ Moved "{label_name}" → "{new_full}"'}) + '\n'

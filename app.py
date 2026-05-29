@@ -605,7 +605,8 @@ ABBREVIATIONS:
 MERGE RULES (most important — merges are irreversible and destructive):
 - NEVER merge a child label into its own parent or any ancestor. "Aluguel/CondLink" into "Aluguel", "E-Commerce/eBay" into "E-Commerce", "Viagens/SIXT" into "Viagens" — these are all forbidden. The child label exists precisely to separate those emails from the parent bucket. Merging destroys that separation.
 - NEVER merge labels that represent different companies, products, services, or people. "Amazon" and "eBay" are different stores. "1Password" and "Bitwarden" are different products. Each sub-label under a parent is a distinct entity — never merge them together or into the parent.
-- Only suggest a merge when two labels at the SAME level refer to the EXACT SAME thing with no organizational distinction: e.g., "Amazon" and "amazon" (identical, different case), or "Gmail" and "Google Mail" (two names for one service with zero distinction).
+- Only suggest a merge when two labels refer to the EXACT SAME thing with no organizational distinction: e.g., "Amazon" and "amazon" (identical, different case), or "Gmail" and "Google Mail" (two names for one service with zero distinction).
+- MERGE DIRECTION: when one label is nested (e.g., "Viagens/SIXT") and a flat duplicate exists at the top level (e.g., "Sixt"), always merge the FLAT one into the NESTED one — never the reverse. The nested label is the correctly organized one; the flat stray is the one to eliminate. So: sourceNames=["Sixt"], targetName="Viagens/SIXT".
 - When in doubt about a merge, NEVER suggest it. Use a "move" instead if a label is under the wrong parent.
 - sourceNames are permanently deleted and their emails moved to targetName — this cannot be undone.
 

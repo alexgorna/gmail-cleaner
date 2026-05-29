@@ -697,7 +697,8 @@ async function runAIAnalysis() {
       return false;
     });
     const skipped = raw.length - suggestions.length;
-    log(`AI returned ${suggestions.length} suggestion(s)${skipped ? ` (${skipped} invalid filtered out)` : ''} for ${data.totalLabels || flatAll.length} labels.`, 'success');
+    const hallucinated = data.hallucinated || 0;
+    log(`AI returned ${suggestions.length} suggestion(s)${skipped ? ` (${skipped} invalid filtered out)` : ''}${hallucinated ? ` ⚠ ${hallucinated} dropped — referenced labels that don't exist.` : ''} for ${data.totalLabels || flatAll.length} labels.`, 'success');
     renderSuggestions();
   } catch(err) {
     log(`AI Reorganize failed: ${err.message}`, 'error');

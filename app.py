@@ -688,6 +688,37 @@ GENERAL:
         parsed      = json.loads(content)
         suggestions = parsed.get('suggestions', parsed) if isinstance(parsed, dict) else parsed
 
+        label_set = set(label_names)
+
+        # Validate every suggestion — drop any that reference a non-existent label name
+        valid = []
+        for sug in suggestions:
+            p = sug.get('params', {})
+            t = sug.get('type')
+            try:
+                if t == 'merge':
+                    sources = p.get('sourceNames', [])
+                    target  = p.get('targetName', '')
+                    if not target or target not in label_set:
+                        continue  # target doesn't exist
+                    if not sources or not all(s in label_set for s in sources):
+                        continue  # one or more sources don't exist
+                elif t == 'rename':
+                    if p.get('oldName') not in label_set:
+                        continue
+                elif t == 'move':
+                    if p.get('labelName') not in label_set:
+                        continue
+                elif t == 'group':
+                    if not all(c in label_set for c in p.get('childNames', [])):
+                        continue
+                valid.append(sug)
+            except Exception:
+                continue
+
+        hallucinated = len(suggestions) - len(valid)
+        suggestions = valid
+
         # Attach resolved IDs upfront for operations that need them
         for sug in suggestions:
             p = sug.get('params', {})
@@ -699,7 +730,7 @@ GENERAL:
                 p['sourceIds'] = [name_to_id[n] for n in p.get('sourceNames', []) if n in name_to_id]
                 p['targetId']  = name_to_id.get(p.get('targetName'))
 
-        return jsonify({'suggestions': suggestions, 'totalLabels': len(user_labels)})
+        return jsonify({'suggestions': suggestions, 'totalLabels': len(user_labels), 'hallucinated': hallucinated})
     except json.JSONDecodeError as e:
         return jsonify({'error': f'AI returned invalid JSON: {e}'}), 500
     except Exception as e:

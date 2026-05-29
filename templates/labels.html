@@ -416,6 +416,7 @@ let aiOpen        = false;
 
 // ── Load tree ────────────────────────────────────────────────────────────
 async function loadTree() {
+  log('Loading labels…', 'info');
   try {
     const res  = await fetch('/api/labels_tree');
     const data = await res.json();
@@ -426,6 +427,9 @@ async function loadTree() {
     treeData.forEach(n => { if (n.children && n.children.length) expanded.add(n.id); });
     updateStats();
     renderTree();
+    const withCounts = flatAll.filter(n => n.messagesTotal > 0).length;
+    const batchErrors = data.batchErrors || 0;
+    log(`Loaded ${flatAll.length} labels — ${withCounts} have message counts.${batchErrors ? ` ⚠ ${batchErrors} label(s) failed batch fetch, showing 0.` : ''}`, 'success');
   } catch(e) {
     document.getElementById('tree-container').innerHTML =
       `<div class="tree-loading" style="color:#ef4444"><i class="bi bi-exclamation-circle" style="font-size:20px"></i><br><br>${esc(e.message)}</div>`;

@@ -475,13 +475,17 @@ def api_labels_tree():
         results = service.users().labels().list(userId='me').execute()
         user_labels = [l for l in results.get('labels', []) if l.get('type') == 'user']
 
-        # Fetch full label details (including messagesTotal) using batch requests
-        # Batching up to 100 per request keeps total round-trips to ~4 for 400 labels
+        # Fetch full label details (including messagesTotal) via batch requests.
+        # Up to 100 gets per batch → ~4 HTTP calls for 400 labels.
         detailed = {l['id']: l for l in user_labels}  # fallback to list data
+        batch_errors = 0
 
         def handle_batch(request_id, response, exception):
+            nonlocal batch_errors
             if exception is None and response:
                 detailed[response['id']] = response
+            elif exception is not None:
+                batch_errors += 1
 
         chunk_size = 100
         for i in range(0, len(user_labels), chunk_size):
@@ -494,7 +498,7 @@ def api_labels_tree():
         enriched = list(detailed.values())
         tree = build_label_tree(enriched)
         flat = {l['id']: l for l in enriched}
-        return jsonify({'tree': tree, 'flat': flat})
+        return jsonify({'tree': tree, 'flat': flat, 'batchErrors': batch_errors})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

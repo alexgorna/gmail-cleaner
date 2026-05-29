@@ -485,14 +485,13 @@ def api_labels_tree():
 def api_label_rename():
     data = request.json
     label_id = data['labelId']
+    old_full_name = data['oldFullName']   # client sends this — avoids extra API round-trip
     new_full_name = data['newFullName']
     service = get_service()
     if not service:
         return jsonify({'error': 'Not logged in'}), 401
     try:
-        current = service.users().labels().get(userId='me', id=label_id).execute()
-        old_full_name = current['name']
-
+        # Fetch all labels once for children lookup
         all_labels = service.users().labels().list(userId='me').execute().get('labels', [])
         children = [l for l in all_labels if l.get('type') == 'user'
                     and l['name'].startswith(old_full_name + '/') and l['id'] != label_id]
@@ -511,6 +510,9 @@ def api_label_rename():
         updated = service.users().labels().patch(
             userId='me', id=label_id, body={'name': new_full_name}
         ).execute()
+        # Verify the rename actually took effect
+        if updated.get('name') != new_full_name:
+            return jsonify({'error': f'Gmail did not apply the rename (got "{updated.get("name")}")'}), 500
         return jsonify({'success': True, 'label': updated, 'childrenRenamed': len(children)})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

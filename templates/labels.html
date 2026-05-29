@@ -544,7 +544,7 @@ async function submitRename(id, oldFull, newFull) {
   try {
     const res  = await fetch('/api/labels/rename', {
       method: 'POST', headers: csrfHeaders(),
-      body: JSON.stringify({ labelId: id, newFullName: newFull })
+      body: JSON.stringify({ labelId: id, oldFullName: oldFull, newFullName: newFull })
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);

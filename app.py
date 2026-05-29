@@ -587,10 +587,16 @@ Move to better parent:
 Group flat labels under new parent:
 {{"type":"group","description":"short description","reason":"why","params":{{"newParentName":"A","childNames":["B","C","D"]}}}}
 
+CRITICAL HIERARCHY RULE:
+- The "/" character is a hierarchy separator. "Germany/Berlin" means "Berlin" is ALREADY nested inside a "Germany" folder.
+- NEVER suggest grouping or moving labels that already share a common prefix — they are already organized.
+- A "group" suggestion is only valid for labels that have NO "/" and could benefit from being nested.
+- A "move" suggestion is only valid if the label is genuinely in the wrong parent.
+
 Rules:
 - Only reference label names that appear in the list above exactly as written
 - For merge: sourceNames are deleted and messages moved to targetName
-- For group: childNames are moved under newParentName (create if needed)
+- For group: childNames must all be flat labels (no "/") that are not yet nested
 - Prioritize: 1) merge near-duplicates 2) language/case standardization 3) hierarchy improvements"""}
             ]
         }

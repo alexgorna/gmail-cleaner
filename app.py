@@ -587,27 +587,11 @@ Move to better parent:
 Group flat labels under new parent:
 {{"type":"group","description":"short description","reason":"why","params":{{"newParentName":"A","childNames":["B","C","D"]}}}}
 
-CRITICAL RULES — violating any of these is worse than making no suggestion:
-
-HIERARCHY:
-- "/" is a nesting separator. "Aluguel/Boleto" means "Boleto" is already inside "Aluguel".
-- If a label already has children (other labels starting with "LabelName/"), it is already a parent folder — never suggest moving or grouping it under itself.
-- Never suggest a move or group where the source and destination are identical.
-- A "group" suggestion is only valid for genuinely flat labels (no "/" in their name) that are not yet nested anywhere.
-- A "move" suggestion is only valid if the label is genuinely misplaced under the wrong parent.
-
-DOT PREFIX:
-- Labels starting with "." (e.g. ".Arquivo", ".Sanitize") use the dot intentionally to pin them to the top of the Gmail label list. NEVER suggest renaming or moving them.
-
-ABBREVIATIONS:
-- Never suggest expanding or renaming labels that are short abbreviations (1-4 characters, or all-caps like "DB", "DM", "AG") — their meaning is unknown and renaming them would be destructive.
-
-GENERAL:
-- Only reference label names that appear in the list above exactly as written.
-- For merge: sourceNames are deleted and messages moved to targetName.
-- For group: childNames must all be flat labels (no "/") not yet nested.
-- Prioritize: 1) merge clear duplicates 2) fix obvious inconsistencies 3) hierarchy improvements.
-- When in doubt, omit the suggestion — fewer high-confidence suggestions are better than many guesses."""}
+Rules:
+- Only reference label names that appear in the list above exactly as written
+- For merge: sourceNames are deleted and messages moved to targetName
+- For group: childNames are moved under newParentName (create if needed)
+- Prioritize: 1) merge near-duplicates 2) language/case standardization 3) hierarchy improvements"""}
             ]
         }
 
@@ -723,32 +707,15 @@ def api_labels_apply_plan():
                 elif op_type == 'merge':
                     source_names = p.get('sourceNames', [])
                     target_name = p.get('targetName')
-                    # Ensure target label exists — exact match first, then case-insensitive fallback
+                    # Ensure target label exists
                     target_label = name_map.get(target_name)
                     if not target_label:
-                        lower = target_name.lower()
-                        target_label = next((l for n, l in name_map.items() if n.lower() == lower), None)
-                    if target_label:
-                        yield json.dumps({'msg': f'  → Using existing label "{target_label["name"]}"'}) + '\n'
-                    else:
-                        try:
-                            target_label = service.users().labels().create(
-                                userId='me', body={'name': target_name,
-                                                   'labelListVisibility': 'labelShow',
-                                                   'messageListVisibility': 'show'}
-                            ).execute()
-                            yield json.dumps({'msg': f'  + Created label "{target_name}"'}) + '\n'
-                        except HttpError as e:
-                            if e.resp.status == 409:
-                                # Label already exists (race / case mismatch) — re-fetch and find it
-                                name_map, id_map = get_label_map()
-                                target_label = name_map.get(target_name) or next(
-                                    (l for n, l in name_map.items() if n.lower() == target_name.lower()), None)
-                                if target_label:
-                                    yield json.dumps({'msg': f'  → Found existing label "{target_label["name"]}"'}) + '\n'
-                            if not target_label:
-                                yield json.dumps({'msg': f'  ⚠ Could not find or create target label "{target_name}", skipping.'}) + '\n'
-                                continue
+                        target_label = service.users().labels().create(
+                            userId='me', body={'name': target_name,
+                                               'labelListVisibility': 'labelShow',
+                                               'messageListVisibility': 'show'}
+                        ).execute()
+                        yield json.dumps({'msg': f'  + Created label "{target_name}"'}) + '\n'
 
                     merged = 0
                     for src_name in source_names:

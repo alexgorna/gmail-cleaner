@@ -663,3 +663,60 @@ The `.row-ai-applied` rule was moved from TR-level to TD-level so it wins over z
 - `max_tokens=2000` was the initial (too-low) default for the reorganize endpoint; it caused `Unterminated string` JSON parse errors. Always use ≥4000 for label list responses.
 
 **Files changed:** `app.py`, `templates/labels.html` (new), `templates/dashboard.html` (Labels nav link added)
+
+---
+
+### 27. Fix — Merge Suggestion UX + AI Prompt Quality (May 29 2026)
+
+**Context:** User accepted a DeepSeek suggestion to "Merge '1 Password' into 'Security/Bitwarden'" expecting a new Security/1Password label to be created. Instead, the merge permanently deleted "1 Password" and folded all its emails into the existing Bitwarden label with no way to distinguish them. Multiple prompt/UI fixes followed.
+
+**Fix 1 — Destructive merge warning in card UI (`templates/labels.html`):**
+- Every merge suggestion card now shows a red warning box below the params:
+  `"⚠ Destructive & irreversible. Source labels are permanently deleted and all their emails folded into the target. Cannot be undone."`
+
+**Fix 2 — AI prompt: strict merge rules (`app.py`, `api_ai_reorganize`):**
+Added explicit MERGE RULES section to the DeepSeek system prompt:
+- NEVER merge a child label into its own parent/ancestor (e.g. `Aluguel/CondLink` → `Aluguel`)
+- NEVER merge labels representing different companies/products/services (1Password ≠ Bitwarden)
+- Only merge truly identical labels (same name, different case; or two names for one service)
+- MERGE DIRECTION: when a flat stray and a nested label are duplicates, always keep the nested one — merge the flat stray INTO the nested one (e.g. sourceNames=["Sixt"], targetName="Viagens/SIXT")
+- NEVER include a commentary/no-op entry to explain why a suggestion was skipped — just omit it entirely
+
+**Fix 3 — Backend guard: block child→parent merges (`app.py`, `api_labels_apply_plan`):**
+Even if AI hallucinates a child→parent merge, the backend now rejects it:
+```python
+if src_name.startswith(target_name + '/') or target_name.startswith(src_name + '/'):
+    yield json.dumps({'msg': f'  ⛔ Blocked: ...'}) + '\n'
+    continue
+```
+
+**Fix 4 — Frontend filter: drop no-op AI suggestions (`templates/labels.html`):**
+After receiving the AI response, suggestions are filtered before rendering:
+- `merge`: must have non-empty `targetName` and at least one `sourceNames` entry
+- `rename`: must have both `oldName` and `newName` and they must differ
+- `move`: must have `labelName` and `newParentName`
+- `group`: must have `newParentName` and at least one `childNames` entry
+- Filtered count logged: "X invalid filtered out"
+
+**Fix 5 — Auto-update Gmail filters on merge (`app.py`, `api_labels_apply_plan`):**
+After deleting each source label during a merge, the backend now:
+1. Lists all Gmail filters via `service.users().settings().filters().list()`
+2. Finds any filter whose `action.addLabelIds` contains the deleted source label ID
+3. Deletes that filter and recreates it pointing to the target label ID
+4. Logs: `↻ Updated N filter(s) to use "TargetLabel"`
+- Only merges require this — rename/move/group preserve label IDs
+
+**Fix 6 — Rename reverts on Enter (blur race condition) (`templates/labels.html`):**
+Root cause: `submitRename` called `renderTree()` synchronously which removed the focused input from DOM, firing `blur` → `cancelRename()` which aborted the rename before the fetch happened.
+Fix: added `renameSubmitting` flag; `cancelRename()` returns immediately if `renameSubmitting` is true.
+```js
+let renameSubmitting = false;
+function cancelRename() { if (renameSubmitting) return; renamingId = null; renderTree(); }
+async function submitRename(...) {
+  renameSubmitting = true; renamingId = null; renderTree(); renameSubmitting = false;
+  // fetch happens here safely
+}
+```
+
+**Files changed:** `app.py`, `templates/labels.html`
+**Commits:** `5796fad`, `61345fc`, `6548a60`, `a6d33d0`, `23d4777`, `e413d4a`

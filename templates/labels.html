@@ -668,8 +668,18 @@ async function runAIAnalysis() {
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
-    suggestions = data.suggestions || [];
-    log(`AI returned ${suggestions.length} suggestion(s) for ${data.totalLabels || flatAll.length} labels.`, 'success');
+    const raw = data.suggestions || [];
+    // Filter out commentary/no-op suggestions (missing required params)
+    suggestions = raw.filter(s => {
+      const p = s.params || {};
+      if (s.type === 'merge') return p.targetName && p.sourceNames && p.sourceNames.length > 0 && p.sourceNames.some(n => n);
+      if (s.type === 'rename') return p.oldName && p.newName && p.oldName !== p.newName;
+      if (s.type === 'move') return p.labelName && (p.newParentName || p.newParentName === '');
+      if (s.type === 'group') return p.newParentName && p.childNames && p.childNames.length > 0;
+      return false;
+    });
+    const skipped = raw.length - suggestions.length;
+    log(`AI returned ${suggestions.length} suggestion(s)${skipped ? ` (${skipped} invalid filtered out)` : ''} for ${data.totalLabels || flatAll.length} labels.`, 'success');
     renderSuggestions();
   } catch(err) {
     log(`AI Reorganize failed: ${err.message}`, 'error');

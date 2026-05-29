@@ -614,7 +614,8 @@ GENERAL:
 - Only reference label names that appear in the list above exactly as written.
 - For group: childNames must all be flat labels (no "/") not yet nested.
 - Prioritize: 1) merge only obvious exact-same duplicates 2) fix obvious inconsistencies 3) hierarchy improvements.
-- When in doubt, omit the suggestion — fewer high-confidence suggestions are better than many guesses."""}
+- When in doubt, omit the suggestion — fewer high-confidence suggestions are better than many guesses.
+- NEVER include a suggestion entry to explain why you are NOT doing something. If you decide to skip an action, simply do not include it. No "no change needed", no "skipping", no commentary entries. Every object in the suggestions array must be a real, executable action with fully populated params."""}
             ]
         }
 

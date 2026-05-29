@@ -472,32 +472,40 @@ def api_labels_tree():
     if not service:
         return jsonify({'error': 'Not logged in'}), 401
     try:
-        results = service.users().labels().list(userId='me').execute()
+        # Request messagesTotal explicitly — Gmail may include it in the list response
+        results = service.users().labels().list(
+            userId='me',
+            fields='labels(id,name,type,messagesTotal,messagesUnread,color,labelListVisibility,messageListVisibility)'
+        ).execute()
         user_labels = [l for l in results.get('labels', []) if l.get('type') == 'user']
 
-        # Fetch full label details (including messagesTotal) via batch requests.
-        # Up to 100 gets per batch → ~4 HTTP calls for 400 labels.
-        detailed = {l['id']: l for l in user_labels}  # fallback to list data
+        has_counts = sum(1 for l in user_labels if l.get('messagesTotal', 0) > 0)
+
+        # If list returned no counts at all, fall back to batch gets
         batch_errors = 0
+        if has_counts == 0:
+            detailed = {l['id']: l for l in user_labels}
+            err_count = [0]
 
-        def handle_batch(request_id, response, exception):
-            nonlocal batch_errors
-            if exception is None and response:
-                detailed[response['id']] = response
-            elif exception is not None:
-                batch_errors += 1
+            def handle_batch(request_id, response, exception):
+                if exception is None and response:
+                    detailed[response['id']] = response
+                elif exception is not None:
+                    err_count[0] += 1
 
-        chunk_size = 100
-        for i in range(0, len(user_labels), chunk_size):
-            chunk = user_labels[i:i + chunk_size]
-            batch = service.new_batch_http_request(callback=handle_batch)
-            for label in chunk:
-                batch.add(service.users().labels().get(userId='me', id=label['id']))
-            batch.execute()
+            chunk_size = 50
+            for i in range(0, len(user_labels), chunk_size):
+                chunk = user_labels[i:i + chunk_size]
+                batch = service.new_batch_http_request(callback=handle_batch)
+                for label in chunk:
+                    batch.add(service.users().labels().get(userId='me', id=label['id']))
+                batch.execute()
 
-        enriched = list(detailed.values())
-        tree = build_label_tree(enriched)
-        flat = {l['id']: l for l in enriched}
+            user_labels = list(detailed.values())
+            batch_errors = err_count[0]
+
+        tree = build_label_tree(user_labels)
+        flat = {l['id']: l for l in user_labels}
         return jsonify({'tree': tree, 'flat': flat, 'batchErrors': batch_errors})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

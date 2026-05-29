@@ -100,6 +100,14 @@
     .label-msg-count { font-size: 11px; color: #94a3b8; margin-left: 5px; font-weight: 400; }
     .tree-actions { display: none; gap: 2px; flex-shrink: 0; }
     .tree-item:hover .tree-actions { display: flex; }
+    /* Pending op chips */
+    .pending-chip { display:inline-flex;align-items:center;gap:3px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;border-radius:10px;font-size:10px;padding:1px 7px;margin-left:6px;white-space:nowrap;flex-shrink:0; }
+    .pending-chip.del { background:#fff5f5;color:#dc2626;border-color:#fca5a5; }
+    .pending-chip.mov { background:#f0fdf4;color:#15803d;border-color:#86efac; }
+    .pending-chip-x { background:none;border:none;color:inherit;cursor:pointer;padding:0 0 0 2px;font-size:13px;line-height:1;opacity:.6; }
+    .pending-chip-x:hover { opacity:1; }
+    .tree-item.pending-delete { opacity:.5; }
+    .tree-item.pending-delete .tree-name { text-decoration:line-through; }
     .tree-btn {
       width: 26px; height: 26px; border-radius: 6px; border: none;
       background: transparent; color: #94a3b8; cursor: pointer;
@@ -380,6 +388,7 @@ let flatAll    = [];
 let expanded   = new Set();
 let renamingId = null;
 let renameSubmitting = false;
+let pendingManualOps = []; // [{type,labelId,fullName,params,desc}]
 let filterText = '';
 let pendingDelete = null;
 let pendingMove   = null;
@@ -420,6 +429,8 @@ async function loadTree() {
   } catch(e) {
     document.getElementById('tree-container').innerHTML =
       `<div class="tree-loading" style="color:#ef4444"><i class="bi bi-exclamation-circle" style="font-size:20px"></i><br><br>${esc(e.message)}</div>`;
+    log(`Error loading labels: ${e.message}`, 'error');
+    document.getElementById('scan-debugger').style.display = 'block';
   }
 }
 
@@ -461,8 +472,19 @@ function renderTree() {
       const indent   = depth * 18;
       const iconCls  = hasKids ? (isOpen ? 'bi-folder2-open' : 'bi-folder2') : 'bi-tag';
       const iconCol  = hasKids ? '#f59e0b' : '#94a3b8';
+      const pendingOp = pendingManualOps.find(o => o.labelId === node.id);
+      const isPendingDelete = pendingOp && pendingOp.type === 'delete';
+      let pendingChip = '';
+      if (pendingOp && !isRename) {
+        const chipCls = pendingOp.type === 'delete' ? 'del' : pendingOp.type === 'move' ? 'mov' : '';
+        let chipLabel = '';
+        if (pendingOp.type === 'rename') chipLabel = `✏ → ${esc(pendingOp.params.newName.split('/').pop())}`;
+        else if (pendingOp.type === 'delete') chipLabel = pendingOp.params.cascade ? '🗑 + children' : '🗑 delete';
+        else if (pendingOp.type === 'move') chipLabel = `→ ${esc(pendingOp.params.newParentName || 'root')}`;
+        pendingChip = `<span class="pending-chip ${chipCls}">${chipLabel}<button class="pending-chip-x" onclick="cancelManualOp('${node.id}',event)" title="Cancel">×</button></span>`;
+      }
 
-      parts.push(`<div class="tree-item" data-id="${node.id}">
+      parts.push(`<div class="tree-item${isPendingDelete ? ' pending-delete' : ''}" data-id="${node.id}">
         <div class="tree-indent" style="width:${indent}px"></div>
         ${hasKids
           ? `<button class="toggle-btn" onclick="toggleExpand('${node.id}',event)"><i class="bi bi-chevron-${isOpen ? 'down' : 'right'}"></i></button>`
@@ -473,6 +495,7 @@ function renderTree() {
                onkeydown="handleRenameKey(event,'${node.id}','${esc(node.fullName)}')"
                onblur="cancelRename()" onclick="event.stopPropagation()">`
           : `<span class="tree-name" title="${esc(node.fullName)}">${hlText(node.name, search)}${node.messagesTotal ? `<span class="label-msg-count">(${node.messagesTotal})</span>` : ''}</span>`}
+        ${pendingChip}
         ${!isRename ? `<div class="tree-actions">
           <button class="tree-btn" title="Rename" onclick="startRename('${node.id}','${esc(node.fullName)}',event)"><i class="bi bi-pencil"></i></button>
           <button class="tree-btn" title="Move to…" onclick="showMoveModal('${node.id}','${esc(node.fullName)}',event)"><i class="bi bi-arrows-move"></i></button>
@@ -531,26 +554,29 @@ function handleRenameKey(e, id, fullName) {
     if (!val) { cancelRename(); return; }
     const parts = fullName.split('/'); parts[parts.length - 1] = val;
     const newFull = parts.join('/');
-    if (newFull !== fullName) submitRename(id, fullName, newFull);
-    else cancelRename();
+    if (newFull !== fullName) {
+      renamingId = null; // clear first so onblur is harmless
+      queueOp({ type: 'rename', labelId: id, fullName,
+        params: { oldName: fullName, newName: newFull, labelId: id },
+        desc: `Rename "${fullName}" → "${newFull}"` });
+    } else cancelRename();
   }
 }
 
-async function submitRename(id, oldFull, newFull) {
-  renameSubmitting = true;
-  renamingId = null; renderTree();
-  renameSubmitting = false;
-  try {
-    const res  = await fetch('/api/labels/rename', {
-      method: 'POST', headers: csrfHeaders(),
-      body: JSON.stringify({ labelId: id, oldFullName: oldFull, newFullName: newFull })
-    });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    const note = data.childrenRenamed > 0 ? ` (+ ${data.childrenRenamed} child${data.childrenRenamed > 1 ? 'ren' : ''} updated)` : '';
-    log(`Renamed "${oldFull}" → "${newFull}"${note}`, 'success');
-    await loadTree();
-  } catch(err) { log(`Error renaming: ${err.message}`, 'error'); }
+// ── Manual op queue ───────────────────────────────────────────────────────
+function queueOp(op) {
+  // Overwrite any existing pending op for this label
+  pendingManualOps = pendingManualOps.filter(o => o.labelId !== op.labelId);
+  pendingManualOps.push(op);
+  renderTree();
+  updateApplyBtn();
+}
+
+function cancelManualOp(labelId, e) {
+  if (e) e.stopPropagation();
+  pendingManualOps = pendingManualOps.filter(o => o.labelId !== labelId);
+  renderTree();
+  updateApplyBtn();
 }
 
 // ── Delete ────────────────────────────────────────────────────────────────
@@ -565,21 +591,14 @@ function showDeleteModal(id, fullName, hasKids, e) {
   new bootstrap.Modal(document.getElementById('deleteModal')).show();
 }
 
-async function confirmDelete() {
+function confirmDelete() {
   if (!pendingDelete) return;
   const { id, fullName } = pendingDelete;
   const cascade = document.getElementById('cascade-check').checked;
   bootstrap.Modal.getInstance(document.getElementById('deleteModal')).hide();
-  try {
-    const res  = await fetch('/api/labels/delete', {
-      method: 'POST', headers: csrfHeaders(),
-      body: JSON.stringify({ labelId: id, cascade })
-    });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    log(`Deleted "${fullName}"${cascade ? ' and all children' : ''}`, 'success');
-    await loadTree();
-  } catch(err) { log(`Error deleting: ${err.message}`, 'error'); }
+  queueOp({ type: 'delete', labelId: id, fullName,
+    params: { labelName: fullName, labelId: id, cascade },
+    desc: `Delete "${fullName}"${cascade ? ' + children' : ''}` });
   pendingDelete = null;
 }
 
@@ -601,7 +620,7 @@ function showMoveModal(id, fullName, e) {
   new bootstrap.Modal(document.getElementById('moveModal')).show();
 }
 
-async function confirmMove() {
+function confirmMove() {
   if (!pendingMove) return;
   const { id, fullName } = pendingMove;
   const newParent  = document.getElementById('move-select').value;
@@ -609,16 +628,9 @@ async function confirmMove() {
   const newFull    = newParent ? `${newParent}/${short}` : short;
   bootstrap.Modal.getInstance(document.getElementById('moveModal')).hide();
   if (newFull === fullName) { pendingMove = null; return; }
-  try {
-    const res  = await fetch('/api/labels/rename', {
-      method: 'POST', headers: csrfHeaders(),
-      body: JSON.stringify({ labelId: id, newFullName: newFull })
-    });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    log(`Moved "${fullName}" → "${newFull}"`, 'success');
-    await loadTree();
-  } catch(err) { log(`Error moving: ${err.message}`, 'error'); }
+  queueOp({ type: 'move', labelId: id, fullName,
+    params: { labelName: fullName, newParentName: newParent, labelId: id },
+    desc: `Move "${fullName}" → "${newFull}"` });
   pendingMove = null;
 }
 
@@ -787,21 +799,24 @@ function skipSug(i) {
 }
 
 function updateApplyBtn() {
-  const n = accepted.size;
+  const n = accepted.size + pendingManualOps.length;
   document.getElementById('accepted-count').textContent = n;
   document.getElementById('btn-apply').disabled = n === 0;
 }
 
 async function applyAccepted() {
-  const ops = [...accepted].sort((a,b) => a-b).map(i => suggestions[i]);
+  // Manual ops first (user's explicit intent), then AI suggestions
+  const manualOps = pendingManualOps.map(op => ({ type: op.type, params: op.params, description: op.desc }));
+  const aiOps     = [...accepted].sort((a,b) => a-b).map(i => suggestions[i]);
+  const ops       = [...manualOps, ...aiOps];
   if (!ops.length) return;
-  // Make sure log is visible
+
   document.getElementById('scan-debugger').style.display = 'block';
   log(`Applying ${ops.length} operation(s)…`);
   document.getElementById('btn-apply').disabled = true;
 
   try {
-    const res    = await fetch('/api/labels/apply_plan', {
+    const res     = await fetch('/api/labels/apply_plan', {
       method: 'POST', headers: csrfHeaders(),
       body: JSON.stringify({ operations: ops })
     });
@@ -818,7 +833,9 @@ async function applyAccepted() {
           if (obj.status === 'complete') {
             log('All operations complete.', 'success');
             accepted.forEach(i => applied.add(i));
-            accepted.clear(); updateApplyBtn();
+            accepted.clear();
+            pendingManualOps = [];
+            updateApplyBtn();
             await loadTree();
             renderSuggestions();
           } else if (obj.msg) {
@@ -828,7 +845,7 @@ async function applyAccepted() {
       }
     }
   } catch(err) { log(`Error: ${err.message}`, 'error'); }
-  document.getElementById('btn-apply').disabled = accepted.size === 0;
+  document.getElementById('btn-apply').disabled = (accepted.size + pendingManualOps.length) === 0;
 }
 
 // ── Console log (identical to dashboard's logToScanDebugger) ─────────────

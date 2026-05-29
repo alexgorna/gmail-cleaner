@@ -474,19 +474,8 @@ def api_labels_tree():
     try:
         results = service.users().labels().list(userId='me').execute()
         user_labels = [l for l in results.get('labels', []) if l.get('type') == 'user']
-
-        # Fetch full label details (including messagesTotal) in parallel
-        def fetch_detail(label):
-            try:
-                return service.users().labels().get(userId='me', id=label['id']).execute()
-            except Exception:
-                return label  # fallback to list data if get fails
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            detailed = list(executor.map(fetch_detail, user_labels))
-
-        tree = build_label_tree(detailed)
-        flat = {l['id']: l for l in detailed}
+        tree = build_label_tree(user_labels)
+        flat = {l['id']: l for l in user_labels}
         return jsonify({'tree': tree, 'flat': flat})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -711,26 +700,48 @@ def api_labels_apply_plan():
                 if op_type == 'rename':
                     old_name = p.get('oldName')
                     new_name = p.get('newName')
-                    label = name_map.get(old_name)
-                    if not label:
+                    label = name_map.get(old_name) or id_map.get(p.get('labelId'))
+                    if label:
+                        old_name = label['name']  # use actual current name for child prefix matching
+                    else:
                         yield json.dumps({'msg': f'  ⚠ Rename: "{old_name}" not found, skipping.'}) + '\n'
                         continue
-                    # Cascade to children
                     children = [(n, l) for n, l in name_map.items() if n.startswith(old_name + '/')]
                     for child_name, child_label in children:
                         new_child = new_name + child_name[len(old_name):]
                         service.users().labels().patch(userId='me', id=child_label['id'], body={'name': new_child}).execute()
                     service.users().labels().patch(userId='me', id=label['id'], body={'name': new_name}).execute()
+                    name_map, id_map = get_label_map()
                     yield json.dumps({'status': 'op_complete', 'type': op_type,
-                                      'msg': f'  ✓ Renamed "{old_name}" → "{new_name}"'}) + '\n'
+                                      'msg': f'  ✓ Renamed "{old_name}" → "{new_name}"' + (f' (+ {len(children)} child{"ren" if len(children)>1 else ""})' if children else '')}) + '\n'
+
+                elif op_type == 'delete':
+                    label_name = p.get('labelName')
+                    cascade = p.get('cascade', False)
+                    label = name_map.get(label_name) or id_map.get(p.get('labelId'))
+                    if not label:
+                        yield json.dumps({'msg': f'  ⚠ Delete: "{label_name}" not found, skipping.'}) + '\n'
+                        continue
+                    label_name = label['name']
+                    if cascade:
+                        children = sorted([(n, l) for n, l in name_map.items() if n.startswith(label_name + '/')],
+                                          key=lambda x: x[0], reverse=True)
+                        for _, child_label in children:
+                            service.users().labels().delete(userId='me', id=child_label['id']).execute()
+                    service.users().labels().delete(userId='me', id=label['id']).execute()
+                    name_map, id_map = get_label_map()
+                    child_note = f' + {len(children)} child{"ren" if len(children)>1 else ""}' if cascade and children else ''
+                    yield json.dumps({'status': 'op_complete', 'type': op_type,
+                                      'msg': f'  ✓ Deleted "{label_name}"{child_note}'}) + '\n'
 
                 elif op_type == 'move':
                     label_name = p.get('labelName')
                     new_parent = p.get('newParentName', '')
-                    label = name_map.get(label_name)
+                    label = name_map.get(label_name) or id_map.get(p.get('labelId'))
                     if not label:
                         yield json.dumps({'msg': f'  ⚠ Move: "{label_name}" not found, skipping.'}) + '\n'
                         continue
+                    label_name = label['name']
                     short = label_name.split('/')[-1]
                     new_full = f'{new_parent}/{short}' if new_parent else short
                     children = [(n, l) for n, l in name_map.items() if n.startswith(label_name + '/')]
@@ -738,6 +749,7 @@ def api_labels_apply_plan():
                         new_child = new_full + child_name[len(label_name):]
                         service.users().labels().patch(userId='me', id=child_label['id'], body={'name': new_child}).execute()
                     service.users().labels().patch(userId='me', id=label['id'], body={'name': new_full}).execute()
+                    name_map, id_map = get_label_map()
                     yield json.dumps({'status': 'op_complete', 'type': op_type,
                                       'msg': f'  ✓ Moved "{label_name}" → "{new_full}"'}) + '\n'
 

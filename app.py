@@ -763,10 +763,13 @@ def api_labels_apply_plan():
         return jsonify({'error': 'No operations provided'}), 400
 
     def generate():
-        service = get_service()
-        if not service:
+        creds = get_creds()
+        if not creds:
             yield json.dumps({'error': 'Not logged in'}) + '\n'
             return
+        http = httplib2.Http(timeout=10)
+        authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
+        service = build('gmail', 'v1', http=authorized_http)
 
         yield json.dumps({'msg': f'Starting {len(operations)} operation(s)…'}) + '\n'
 
@@ -890,6 +893,17 @@ def api_labels_apply_plan():
                                 yield json.dumps({'msg': f'  ⚠ Could not find or create target label "{target_name}", skipping.'}) + '\n'
                                 continue
 
+                    # Fetch Gmail filters ONCE up front with a longer timeout
+                    all_filters = []
+                    filter_svc = None
+                    try:
+                        filter_http = httplib2.Http(timeout=30)
+                        filter_authorized = google_auth_httplib2.AuthorizedHttp(creds, http=filter_http)
+                        filter_svc = build('gmail', 'v1', http=filter_authorized)
+                        all_filters = filter_svc.users().settings().filters().list(userId='me').execute().get('filter', [])
+                    except Exception as fe:
+                        yield json.dumps({'msg': f'  ⚠ Could not fetch filters (will skip filter update): {fe}'}) + '\n'
+
                     merged = 0
                     for src_name in source_names:
                         if src_name == target_name:
@@ -925,26 +939,26 @@ def api_labels_apply_plan():
                         service.users().labels().delete(userId='me', id=src['id']).execute()
                         merged += len(msgs)
 
-                        # Update any Gmail filters that applied the now-deleted source label
-                        try:
-                            all_filters = service.users().settings().filters().list(userId='me').execute().get('filter', [])
-                            filters_updated = 0
-                            for f in all_filters:
-                                action = f.get('action', {})
-                                add_ids = action.get('addLabelIds', [])
-                                if src['id'] in add_ids:
-                                    # Replace source ID with target ID
-                                    new_add_ids = [target_label['id'] if lid == src['id'] else lid for lid in add_ids]
-                                    new_action = dict(action)
-                                    new_action['addLabelIds'] = new_add_ids
-                                    new_filter_body = {'criteria': f.get('criteria', {}), 'action': new_action}
-                                    service.users().settings().filters().delete(userId='me', id=f['id']).execute()
-                                    service.users().settings().filters().create(userId='me', body=new_filter_body).execute()
-                                    filters_updated += 1
-                            if filters_updated:
-                                yield json.dumps({'msg': f'  ↻ Updated {filters_updated} filter(s) to use "{target_name}"'}) + '\n'
-                        except Exception as fe:
-                            yield json.dumps({'msg': f'  ⚠ Could not update filters for "{src_name}": {fe}'}) + '\n'
+                        # Update any Gmail filters that referenced the now-deleted source label
+                        # (uses the pre-fetched list — no extra API call per source)
+                        if all_filters and filter_svc:
+                            try:
+                                filters_updated = 0
+                                for f in all_filters:
+                                    action = f.get('action', {})
+                                    add_ids = action.get('addLabelIds', [])
+                                    if src['id'] in add_ids:
+                                        new_add_ids = [target_label['id'] if lid == src['id'] else lid for lid in add_ids]
+                                        new_action = dict(action)
+                                        new_action['addLabelIds'] = new_add_ids
+                                        new_filter_body = {'criteria': f.get('criteria', {}), 'action': new_action}
+                                        filter_svc.users().settings().filters().delete(userId='me', id=f['id']).execute()
+                                        filter_svc.users().settings().filters().create(userId='me', body=new_filter_body).execute()
+                                        filters_updated += 1
+                                if filters_updated:
+                                    yield json.dumps({'msg': f'  ↻ Updated {filters_updated} filter(s) to use "{target_name}"'}) + '\n'
+                            except Exception as fe:
+                                yield json.dumps({'msg': f'  ⚠ Could not update filters for "{src_name}": {fe}'}) + '\n'
 
                     yield json.dumps({'status': 'op_complete', 'type': op_type,
                                       'msg': f'  ✓ Merged {len(source_names)} label(s) into "{target_name}" ({merged} messages)'}) + '\n'

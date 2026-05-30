@@ -1017,8 +1017,12 @@ async function applyAccepted() {
 
   document.getElementById('scan-debugger').style.display = 'block';
   log(`Applying ${ops.length} operation(s)…`);
-  document.getElementById('btn-apply').disabled = true;
 
+  const btn = document.getElementById('btn-apply');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;border-color:rgba(255,255,255,0.3);border-top-color:#fff;display:inline-block;vertical-align:middle;margin-right:6px"></span>Applying…';
+
+  let success = false;
   try {
     const res     = await fetch('/api/labels/apply_plan', {
       method: 'POST', headers: csrfHeaders(),
@@ -1035,6 +1039,7 @@ async function applyAccepted() {
         try {
           const obj = JSON.parse(line);
           if (obj.status === 'complete') {
+            success = true;
             log('All operations complete.', 'success');
             accepted.forEach(i => applied.add(i));
             accepted.clear();
@@ -1049,7 +1054,22 @@ async function applyAccepted() {
       }
     }
   } catch(err) { log(`Error: ${err.message}`, 'error'); }
-  document.getElementById('btn-apply').disabled = (accepted.size + pendingManualOps.length) === 0;
+
+  // Flash "Done ✓" briefly if successful, then restore
+  if (success) {
+    btn.innerHTML = '✓ Done';
+    btn.style.background = '#16a34a';
+    btn.style.borderColor = '#16a34a';
+    setTimeout(() => {
+      btn.innerHTML = 'Apply Changes';
+      btn.style.background = '';
+      btn.style.borderColor = '';
+      btn.disabled = (accepted.size + pendingManualOps.length) === 0;
+    }, 2000);
+  } else {
+    btn.innerHTML = 'Apply Changes';
+    btn.disabled = (accepted.size + pendingManualOps.length) === 0;
+  }
 }
 
 // ── Console log (identical to dashboard's logToScanDebugger) ─────────────

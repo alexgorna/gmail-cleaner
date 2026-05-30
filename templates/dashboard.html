@@ -1160,14 +1160,7 @@
         const sourcePicker = document.getElementById('source-picker-bar');
         if (sourcePicker) sourcePicker.style.display = 'none';
 
-        const progressBar = document.getElementById('progress-bar-inner');
-        const progressDetail = document.getElementById('progress-detail');
-        const statusText = document.getElementById('status-text');
         const sourceLbl = currentSourceLabelName ? `"${currentSourceLabelName}"` : 'Inbox';
-        statusText.innerText = `Connecting to Gmail...`;
-        progressDetail.innerText = 'Initializing connection...';
-        progressBar.style.width = '0%';
-        document.getElementById('scan-progress-wrapper').style.display = '';
         document.getElementById('hero-status-content').innerHTML = `
             <h1 class="hero-title" id="status-text">Scanning ${sourceLbl}…</h1>
             <div id="scan-progress-wrapper">

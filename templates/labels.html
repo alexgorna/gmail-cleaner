@@ -355,6 +355,55 @@
   </div>
 </div>
 
+<!-- Merge -->
+<div class="modal fade" id="mergeModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header py-3">
+        <h6 class="modal-title fw-semibold"><i class="bi bi-diagram-2 me-1"></i>Merge label</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body py-3">
+        <div style="font-size:13px;color:#475569;margin-bottom:14px">
+          Choose which label to <strong>keep</strong>. The other label will be <strong style="color:#dc2626">permanently deleted</strong> and all its emails moved to the one you keep.
+        </div>
+
+        <!-- Source (to delete) -->
+        <div style="margin-bottom:14px">
+          <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;color:#dc2626">
+            <i class="bi bi-trash me-1"></i>Delete this label (source)
+          </label>
+          <div id="merge-source-display" style="font-size:13px;padding:7px 10px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;color:#991b1b;font-family:monospace"></div>
+          <div style="margin-top:6px">
+            <button class="btn btn-link btn-sm p-0" style="font-size:12px;color:#64748b" onclick="swapMerge()">
+              <i class="bi bi-arrow-down-up me-1"></i>Swap source and target
+            </button>
+          </div>
+        </div>
+
+        <!-- Target (to keep) -->
+        <div style="margin-bottom:6px">
+          <label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px;color:#16a34a">
+            <i class="bi bi-check-circle me-1"></i>Keep this label (target — receives all emails)
+          </label>
+          <input type="text" id="merge-target-search" class="form-control form-control-sm" placeholder="Search for a label…" oninput="filterMergeOptions()">
+          <select class="form-select form-select-sm mt-1" id="merge-target-select" size="6" style="height:auto"></select>
+        </div>
+
+        <div id="merge-warning" style="display:none;margin-top:12px;padding:8px 10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;font-size:12px;color:#92400e">
+          <i class="bi bi-exclamation-triangle me-1"></i><span id="merge-warning-text"></span>
+        </div>
+      </div>
+      <div class="modal-footer py-2">
+        <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-sm btn-danger" id="merge-confirm-btn" onclick="confirmMerge()" disabled>
+          <i class="bi bi-diagram-2 me-1"></i>Queue merge
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- New label -->
 <div class="modal fade" id="newLabelModal" tabindex="-1">
   <div class="modal-dialog modal-sm">
@@ -392,6 +441,7 @@ let pendingManualOps = []; // [{type,labelId,fullName,params,desc}]
 let filterText = '';
 let pendingDelete = null;
 let pendingMove   = null;
+let pendingMerge  = null; // {id, fullName} — the label clicked (starts as source)
 let suggestions   = [];
 let accepted      = new Set();
 let skipped       = new Set();
@@ -480,11 +530,13 @@ function renderTree() {
       const isPendingDelete = pendingOp && pendingOp.type === 'delete';
       let pendingChip = '';
       if (pendingOp && !isRename) {
-        const chipCls = pendingOp.type === 'delete' ? 'del' : pendingOp.type === 'move' ? 'mov' : '';
+        const chipCls = pendingOp.type === 'delete' ? 'del' : pendingOp.type === 'move' ? 'mov' : pendingOp.type === 'merge' ? 'del' : '';
         let chipLabel = '';
         if (pendingOp.type === 'rename') chipLabel = `✏ → ${esc(pendingOp.params.newName.split('/').pop())}`;
         else if (pendingOp.type === 'delete') chipLabel = pendingOp.params.cascade ? '🗑 + children' : '🗑 delete';
         else if (pendingOp.type === 'move') chipLabel = `→ ${esc(pendingOp.params.newParentName || 'root')}`;
+        else if (pendingOp.type === 'merge') chipLabel = `⇢ merge into "${esc(pendingOp.params.targetName.split('/').pop())}"`;
+        const isPendingMerge = pendingOp.type === 'merge';
         pendingChip = `<span class="pending-chip ${chipCls}">${chipLabel}<button class="pending-chip-x" onclick="cancelManualOp('${node.id}',event)" title="Cancel">×</button></span>`;
       }
 
@@ -503,6 +555,7 @@ function renderTree() {
         ${!isRename ? `<div class="tree-actions">
           <button class="tree-btn" title="Rename" onclick="startRename('${node.id}','${esc(node.fullName)}',event)"><i class="bi bi-pencil"></i></button>
           <button class="tree-btn" title="Move to…" onclick="showMoveModal('${node.id}','${esc(node.fullName)}',event)"><i class="bi bi-arrows-move"></i></button>
+          <button class="tree-btn" title="Merge into…" onclick="showMergeModal('${node.id}','${esc(node.fullName)}',event)"><i class="bi bi-diagram-2"></i></button>
           <button class="tree-btn danger" title="Delete" onclick="showDeleteModal('${node.id}','${esc(node.fullName)}',${hasKids},event)"><i class="bi bi-trash"></i></button>
         </div>` : ''}
       </div>`);
@@ -636,6 +689,140 @@ function confirmMove() {
     params: { labelName: fullName, newParentName: newParent, labelId: id },
     desc: `Move "${fullName}" → "${newFull}"` });
   pendingMove = null;
+}
+
+// ── Merge ─────────────────────────────────────────────────────────────────
+let mergeAllOptions = []; // [{fullName, id}] — all labels except source
+
+function showMergeModal(id, fullName, e) {
+  e.stopPropagation();
+  pendingMerge = { sourceId: id, sourceName: fullName };
+  _renderMergeModal();
+  new bootstrap.Modal(document.getElementById('mergeModal')).show();
+  setTimeout(() => document.getElementById('merge-target-search').focus(), 300);
+}
+
+function _renderMergeModal() {
+  const { sourceName, sourceId } = pendingMerge;
+  document.getElementById('merge-source-display').textContent = sourceName;
+  document.getElementById('merge-target-search').value = '';
+
+  // Build option list: all labels except the source itself
+  mergeAllOptions = flatAll
+    .filter(n => n.id !== sourceId)
+    .sort((a, b) => a.fullName.localeCompare(b.fullName));
+
+  _fillMergeSelect(mergeAllOptions);
+
+  // Wire change listener once (replace element to clear old listeners)
+  const sel = document.getElementById('merge-target-select');
+  const freshSel = sel.cloneNode(true);
+  sel.parentNode.replaceChild(freshSel, sel);
+  freshSel.addEventListener('change', _updateMergeWarning);
+
+  _updateMergeWarning();
+}
+
+function _fillMergeSelect(options) {
+  const sel = document.getElementById('merge-target-select');
+  sel.innerHTML = options.map(n =>
+    `<option value="${esc(n.fullName)}" data-id="${n.id}">${esc(n.fullName)}</option>`
+  ).join('');
+  sel.selectedIndex = -1;
+  document.getElementById('merge-confirm-btn').disabled = true;
+}
+
+function filterMergeOptions() {
+  const q = document.getElementById('merge-target-search').value.toLowerCase();
+  const filtered = q
+    ? mergeAllOptions.filter(n => n.fullName.toLowerCase().includes(q))
+    : mergeAllOptions;
+  const sel = document.getElementById('merge-target-select');
+  sel.innerHTML = filtered.map(n =>
+    `<option value="${esc(n.fullName)}" data-id="${n.id}">${esc(n.fullName)}</option>`
+  ).join('');
+  sel.selectedIndex = -1;
+  sel.onchange = _updateMergeWarning;
+  document.getElementById('merge-confirm-btn').disabled = true;
+  _updateMergeWarning();
+}
+
+function _updateMergeWarning() {
+  const sel = document.getElementById('merge-target-select');
+  const target = sel.options[sel.selectedIndex]?.value || '';
+  const warning = document.getElementById('merge-warning');
+  const btn = document.getElementById('merge-confirm-btn');
+
+  if (!target) {
+    warning.style.display = 'none';
+    btn.disabled = true;
+    return;
+  }
+
+  const { sourceName } = pendingMerge;
+  // Block child→parent or parent→child merges
+  const srcIsChildOfTgt = sourceName.startsWith(target + '/');
+  const tgtIsChildOfSrc = target.startsWith(sourceName + '/');
+
+  if (srcIsChildOfTgt || tgtIsChildOfSrc) {
+    document.getElementById('merge-warning-text').textContent =
+      `Cannot merge a label with its own parent or child. Use Move instead.`;
+    warning.style.display = 'block';
+    btn.disabled = true;
+    return;
+  }
+
+  document.getElementById('merge-warning-text').textContent =
+    `"${sourceName}" will be permanently deleted and all its emails moved to "${target}".`;
+  warning.style.display = 'block';
+  btn.disabled = false;
+}
+
+function swapMerge() {
+  const sel = document.getElementById('merge-target-select');
+  const targetName = sel.options[sel.selectedIndex]?.value;
+  const targetId   = sel.options[sel.selectedIndex]?.dataset?.id;
+  if (!targetName || !targetId) return;
+
+  // Save the old source before overwriting
+  const oldSourceId   = pendingMerge.sourceId;
+  const oldSourceName = pendingMerge.sourceName;
+
+  // Swap: current target becomes the new source
+  pendingMerge = { sourceId: targetId, sourceName: targetName };
+  _renderMergeModal();
+
+  // Pre-select the old source as the new target
+  const newSel = document.getElementById('merge-target-select');
+  for (let i = 0; i < newSel.options.length; i++) {
+    if (newSel.options[i].dataset.id === oldSourceId) { newSel.selectedIndex = i; break; }
+  }
+  _updateMergeWarning();
+}
+
+function confirmMerge() {
+  const sel = document.getElementById('merge-target-select');
+  const targetName = sel.options[sel.selectedIndex]?.value;
+  const targetId   = sel.options[sel.selectedIndex]?.dataset?.id;
+  if (!targetName || !targetId || !pendingMerge) return;
+
+  const { sourceName, sourceId } = pendingMerge;
+  bootstrap.Modal.getInstance(document.getElementById('mergeModal')).hide();
+
+  // Use sourceId as the "labelId" key so it shows up correctly in the tree
+  queueOp({
+    type: 'merge',
+    labelId: sourceId,
+    fullName: sourceName,
+    params: {
+      sourceNames: [sourceName],
+      sourceIds:   [sourceId],
+      targetName,
+      targetId,
+    },
+    desc: `Merge "${sourceName}" → "${targetName}" (source deleted)`,
+  });
+  pendingMerge = null;
 }
 
 // ── New label ─────────────────────────────────────────────────────────────

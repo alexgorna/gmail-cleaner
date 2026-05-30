@@ -5,6 +5,7 @@ import time
 import redis
 import httplib2
 import google_auth_httplib2
+import concurrent.futures
 from collections import Counter
 
 from celery_app import celery_app
@@ -40,7 +41,7 @@ def append_log(r, job_id, msg, level='info'):
 
 
 @celery_app.task
-def run_inbox_scan(job_id, credentials_dict):
+def run_inbox_scan(job_id, credentials_dict, source_label_id=None, source_label_name=None):
     r = get_redis_client()
 
     try:
@@ -57,18 +58,24 @@ def run_inbox_scan(job_id, credentials_dict):
         authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
         service = build('gmail', 'v1', http=authorized_http)
 
+        scan_source = source_label_name or 'Inbox'
         set_progress(r, job_id, {
             'status': 'running', 'percent': 0,
             'processed': 0, 'total': 0,
-            'message': 'Connecting to Gmail...'
+            'message': 'Connecting to Gmail...',
+            'source_label_id': source_label_id,
+            'source_label_name': source_label_name,
         })
-        append_log(r, job_id, 'Starting connection to Gmail API...')
+        append_log(r, job_id, f'Starting connection to Gmail API... (source: {scan_source})')
 
         # --- Phase 1: List all message IDs ---
         messages = []
-        list_req = service.users().messages().list(
-            userId='me', labelIds=['INBOX'], maxResults=MAX_MESSAGES_PER_PAGE
-        )
+        list_kwargs = {'userId': 'me', 'maxResults': MAX_MESSAGES_PER_PAGE}
+        if source_label_id:
+            list_kwargs['labelIds'] = [source_label_id]
+        else:
+            list_kwargs['labelIds'] = ['INBOX']
+        list_req = service.users().messages().list(**list_kwargs)
         page_num = 1
 
         while list_req is not None:
@@ -102,8 +109,10 @@ def run_inbox_scan(job_id, credentials_dict):
             })
             return
 
-        # --- Phase 2: Batch fetch From headers ---
+        # --- Phase 2: Batch fetch From + Subject headers ---
         senders = []
+        subjects_by_email = {}  # email -> [subject, ...] (up to 3 per sender)
+        MAX_SUBJECTS = 3
         total_batches = (total_messages // BATCH_SIZE) + (1 if total_messages % BATCH_SIZE > 0 else 0)
 
         for i in range(0, total_messages, BATCH_SIZE):
@@ -111,19 +120,27 @@ def run_inbox_scan(job_id, credentials_dict):
             current_batch_num = (i // BATCH_SIZE) + 1
             batch = service.new_batch_http_request()
 
-            def batch_callback(request_id, response, exception, _senders=senders):
+            def batch_callback(request_id, response, exception,
+                               _senders=senders, _subjects=subjects_by_email):
                 if exception is None:
                     headers = response['payload']['headers']
                     from_header = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
                     match = re.search(r'<(.+?)>', from_header)
                     clean_email = match.group(1) if match else from_header
-                    _senders.append(clean_email.lower().strip())
+                    clean_email = clean_email.lower().strip()
+                    _senders.append(clean_email)
+
+                    subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '')
+                    if subject:
+                        bucket = _subjects.setdefault(clean_email, [])
+                        if len(bucket) < MAX_SUBJECTS:
+                            bucket.append(subject[:120])  # cap each subject length
 
             for msg in chunk:
                 batch.add(
                     service.users().messages().get(
                         userId='me', id=msg['id'],
-                        format='metadata', metadataHeaders=['From']
+                        format='metadata', metadataHeaders=['From', 'Subject']
                     ),
                     callback=batch_callback
                 )
@@ -152,7 +169,8 @@ def run_inbox_scan(job_id, credentials_dict):
         if senders:
             counts = Counter(senders)
             result_data = [
-                {'email': email, 'count': count}
+                {'email': email, 'count': count,
+                 'subjects': subjects_by_email.get(email, [])}
                 for email, count in sorted(counts.items(), key=lambda x: (-x[1], x[0]))
             ]
         else:
@@ -162,6 +180,8 @@ def run_inbox_scan(job_id, credentials_dict):
         set_progress(r, job_id, {
             'status': 'complete',
             'percent': 100,
+            'source_label_id': source_label_id,
+            'source_label_name': source_label_name,
             'processed': total_messages,
             'total': total_messages,
             'message': 'Analysis complete. Rendering table...'
@@ -182,20 +202,38 @@ def _set_ai_status(r, job_id, data):
     r.setex(f'ai:{job_id}:status', AI_JOB_TTL, json.dumps(data))
 
 
+# Hard wall-clock timeout for the entire AI call (connect + generate + transfer).
+# Slightly longer than AI_TIMEOUT_SECONDS so the requests-level timeout fires first
+# under normal conditions; this is a belt-and-suspenders kill-switch.
+AI_HARD_TIMEOUT = int(os.environ.get('AI_TIMEOUT_SECONDS', '90')) + 30
+
+
 @celery_app.task
 def run_ai_suggestions(job_id, senders, label_names):
     """
-    Call DeepSeek in the background worker (no HTTP timeout constraint).
+    Call the AI provider in the background worker (no HTTP timeout constraint).
     Writes status to ai:{job_id}:status and results to ai:{job_id}:result.
     """
     r = get_redis_client()
     _set_ai_status(r, job_id, {
         'status': 'running',
-        'message': f'Asking DeepSeek to analyse {len(senders)} senders…',
+        'message': f'Analysing {len(senders)} senders…',
     })
 
     try:
-        result = ai_labeler.suggest_labels(senders, label_names)
+        # Run the AI call in a thread so we can impose a hard wall-clock timeout.
+        # The requests-level timeout=(10, 90) catches most hangs; this catches the rest
+        # (e.g. keepalive bytes that reset the per-chunk timer).
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(ai_labeler.suggest_labels, senders, label_names)
+            try:
+                result = future.result(timeout=AI_HARD_TIMEOUT)
+            except concurrent.futures.TimeoutError:
+                raise TimeoutError(
+                    f'AI call exceeded hard timeout of {AI_HARD_TIMEOUT}s — '
+                    f'no response from provider after {len(senders)} senders'
+                )
+
         group_count = len(result.get('suggestions', []))
         r.setex(f'ai:{job_id}:result', AI_JOB_TTL, json.dumps(result))
         _set_ai_status(r, job_id, {

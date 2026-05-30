@@ -537,6 +537,21 @@
                 <span id="scan-subheader-text"></span>
             </div>
 
+            <!-- Source picker — shown after scan completes -->
+            <div id="source-picker-bar" style="display:none; padding:8px 20px; border-bottom:1px solid #f1f5f9; background:#fafbfc; display:none; align-items:center; gap:10px; font-size:13px; color:#64748b;">
+                <span>Scanning:</span>
+                <div class="dropdown">
+                    <button class="btn btn-light btn-sm border rounded-pill px-3 dropdown-toggle" type="button" data-bs-toggle="dropdown" id="source-picker-btn">
+                        <i class="bi bi-inbox me-1"></i><span id="source-picker-label">Inbox</span>
+                    </button>
+                    <ul class="dropdown-menu shadow border-0" id="source-picker-dropdown" style="max-height:320px;overflow-y:auto;min-width:280px">
+                        <li><a class="dropdown-item" href="#" onclick="rescanSource(null, null)"><i class="bi bi-inbox me-2"></i>Inbox</a></li>
+                        <li><hr class="dropdown-divider"></li>
+                    </ul>
+                </div>
+                <span style="color:#94a3b8; font-size:12px" id="source-picker-hint">Switch source to rescan a different label</span>
+            </div>
+
             <div class="table-responsive">
                 <table class="table table-custom mb-0 w-100">
                     <thead>
@@ -660,6 +675,8 @@
     let rowsPerPage = 50;
     let pendingActions = {};
     let labelOptionsHTML = "";
+    let currentSourceLabelId   = null;   // null = inbox
+    let currentSourceLabelName = null;
     let currentEditingRowEmail = null;
     let isBulkCreate = false;
     let currentInboxCount = 0;
@@ -749,10 +766,10 @@
                             ${labelOptionsHTML}
                         </optgroup>
                     </select>
-                    <div class="label-options" data-email="${row.email}" style="display:${(pendingActions[row.email] && pendingActions[row.email].action === 'label') ? 'flex' : 'none'}">
+                    ${!currentSourceLabelId ? `<div class="label-options" data-email="${row.email}" style="display:${(pendingActions[row.email] && pendingActions[row.email].action === 'label') ? 'flex' : 'none'}">
                         <label class="label-opt-item"><input type="checkbox" onchange="toggleLabelOption(this,'skipInbox')" ${(pendingActions[row.email] && pendingActions[row.email].skipInbox === false) ? '' : 'checked'}> Skip Inbox</label>
                         <label class="label-opt-item"><input type="checkbox" onchange="toggleLabelOption(this,'autoLabel')" ${(pendingActions[row.email] && pendingActions[row.email].autoLabel === false) ? '' : 'checked'}> Auto Label</label>
-                    </div>
+                    </div>` : ''}
                 </td>
             `;
             
@@ -1131,23 +1148,46 @@
     let scanJobId = null;
     let logOffset = 0;
 
-    async function startScan() {
+    async function startScan(labelId, labelName) {
         if (scanPollInterval) { clearInterval(scanPollInterval); scanPollInterval = null; }
         logOffset = 0;
         scanJobId = null;
+        pendingActions = {};
+        currentSourceLabelId   = labelId   || null;
+        currentSourceLabelName = labelName || null;
+
+        // Hide source picker while scanning
+        const sourcePicker = document.getElementById('source-picker-bar');
+        if (sourcePicker) sourcePicker.style.display = 'none';
 
         const progressBar = document.getElementById('progress-bar-inner');
         const progressDetail = document.getElementById('progress-detail');
         const statusText = document.getElementById('status-text');
-        statusText.innerText = 'Connecting to Gmail...';
+        const sourceLbl = currentSourceLabelName ? `"${currentSourceLabelName}"` : 'Inbox';
+        statusText.innerText = `Connecting to Gmail...`;
         progressDetail.innerText = 'Initializing connection...';
         progressBar.style.width = '0%';
+        document.getElementById('scan-progress-wrapper').style.display = '';
+        document.getElementById('hero-status-content').innerHTML = `
+            <h1 class="hero-title" id="status-text">Scanning ${sourceLbl}…</h1>
+            <div id="scan-progress-wrapper">
+                <div class="progress progress-custom mt-3">
+                    <div class="progress-bar" id="progress-bar-inner" style="width:0%"></div>
+                </div>
+                <p class="progress-detail mt-2" id="progress-detail">Initializing connection...</p>
+            </div>`;
 
         const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
         try {
+            const body = {};
+            if (currentSourceLabelId) {
+                body.source_label_id   = currentSourceLabelId;
+                body.source_label_name = currentSourceLabelName;
+            }
             const res = await fetch('/api/start_scan', {
                 method: 'POST',
-                headers: { 'X-CSRFToken': csrfToken }
+                headers: { 'X-CSRFToken': csrfToken, 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
             });
             const data = await res.json();
             if (data.error) { logToScanDebugger('Error: ' + data.error, 'error'); return; }
@@ -1177,15 +1217,16 @@
                 statusText.innerText = 'Queued — waiting for worker...';
 
             } else if (data.status === 'running') {
-                progressBar.style.width = data.percent + '%';
-                statusText.innerText = data.percent > 0
-                    ? `Scanning Inbox (${data.percent}%)`
-                    : 'Scanning Inbox...';
-                if (data.message) progressDetail.innerText = data.message;
+                const pct = data.percent || 0;
+                const srcLbl = currentSourceLabelName ? `"${currentSourceLabelName}"` : 'Inbox';
+                document.getElementById('progress-bar-inner') && (document.getElementById('progress-bar-inner').style.width = pct + '%');
+                document.getElementById('status-text') && (document.getElementById('status-text').innerText = pct > 0
+                    ? `Scanning ${srcLbl} (${pct}%)`
+                    : `Scanning ${srcLbl}…`);
+                if (data.message) document.getElementById('progress-detail') && (document.getElementById('progress-detail').innerText = data.message);
 
             } else if (data.status === 'complete') {
                 clearInterval(scanPollInterval); scanPollInterval = null;
-                progressBar.style.width = '100%';
                 // Fetch results separately (kept out of progress key to avoid large Redis values)
                 const resultsRes = await fetch(`/api/scan_results/${scanJobId}`);
                 const resultData = await resultsRes.json();
@@ -1195,10 +1236,13 @@
                 currentInboxCount = totalEmails;
                 sessionOrganizedCount = 0;
                 aiAppliedRows = new Set();
+                const srcLbl = currentSourceLabelName ? `"${currentSourceLabelName}"` : 'your inbox';
                 document.getElementById('hero-status-content').innerHTML = `
-                    <h1 class="hero-title" style="margin-top: 10px;">You have <span class="hero-count" id="inbox-count-display">${totalEmails.toLocaleString()} emails</span> in your inbox.</h1>
+                    <h1 class="hero-title" style="margin-top: 10px;">You have <span class="hero-count" id="inbox-count-display">${totalEmails.toLocaleString()} emails</span> in ${srcLbl}.</h1>
                     <p id="organized-summary" style="display:none; margin-top:10px; font-size:1rem; color:#475569; margin-bottom:0;">You successfully organized <span id="organized-count-display" style="color:#1DB954; font-weight:700;"></span>.</p>
                 `;
+                // Source picker bar — show after scan completes
+                _renderSourcePicker();
                 // Update contextual sub-header
                 const subheader = document.getElementById('scan-subheader');
                 const subheaderText = document.getElementById('scan-subheader-text');
@@ -1364,6 +1408,42 @@
         }
     }
 
+    function _renderSourcePicker() {
+        const bar = document.getElementById('source-picker-bar');
+        if (!bar) return;
+        bar.style.display = 'flex';
+
+        // Set current label pill
+        const lbl = document.getElementById('source-picker-label');
+        const btn = document.getElementById('source-picker-btn');
+        if (currentSourceLabelName) {
+            lbl.textContent = currentSourceLabelName;
+            btn.querySelector('i').className = 'bi bi-tag me-1';
+        } else {
+            lbl.textContent = 'Inbox';
+            btn.querySelector('i').className = 'bi bi-inbox me-1';
+        }
+
+        // Populate dropdown with user labels
+        const ul = document.getElementById('source-picker-dropdown');
+        let html = `<li><a class="dropdown-item${!currentSourceLabelId ? ' active' : ''}" href="#" onclick="rescanSource(null,null)"><i class="bi bi-inbox me-2"></i>Inbox</a></li>`;
+        html += `<li><hr class="dropdown-divider"></li>`;
+        html += existingLabels
+            .filter(l => l.type === 'user')
+            .sort((a,b) => a.name.localeCompare(b.name))
+            .map(l => `<li><a class="dropdown-item${currentSourceLabelId === l.id ? ' active' : ''}" href="#" onclick="rescanSource('${l.id}','${l.name.replace(/'/g,"\\'")}')"><i class="bi bi-tag me-2"></i>${l.name}</a></li>`)
+            .join('');
+        ul.innerHTML = html;
+    }
+
+    function rescanSource(labelId, labelName) {
+        // Close dropdown
+        const ddEl = document.getElementById('source-picker-dropdown');
+        const dd = bootstrap.Dropdown.getInstance(document.getElementById('source-picker-btn'));
+        if (dd) dd.hide();
+        startScan(labelId || null, labelName || null);
+    }
+
     async function applyChanges() {
         const btn = document.getElementById('apply-btn');
         if (btn.disabled) return;
@@ -1391,10 +1471,15 @@
         const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
 
         try {
+            const payload = {
+                actions,
+                source_label_id:   currentSourceLabelId,
+                source_label_name: currentSourceLabelName
+            };
             const response = await fetch('/api/apply_actions', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken }, 
-                body: JSON.stringify(actions)
+                headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+                body: JSON.stringify(payload)
             });
             const reader = response.body.getReader();
             const decoder = new TextDecoder();

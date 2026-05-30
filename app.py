@@ -197,8 +197,15 @@ def start_scan():
     job_id = str(uuid.uuid4())
     session['scan_job_id'] = job_id
     credentials_dict = session.get('credentials')
-    run_inbox_scan.delay(job_id, credentials_dict)
-    return jsonify({'job_id': job_id})
+    body = request.json or {}
+    source_label_id   = body.get('source_label_id')    # None = inbox
+    source_label_name = body.get('source_label_name')
+    run_inbox_scan.delay(job_id, credentials_dict,
+                         source_label_id=source_label_id,
+                         source_label_name=source_label_name)
+    return jsonify({'job_id': job_id,
+                    'source_label_id': source_label_id,
+                    'source_label_name': source_label_name})
 
 @app.route('/api/scan_status/<job_id>')
 def scan_status(job_id):
@@ -306,7 +313,10 @@ PARALLEL_WORKERS = 5  # Process this many senders simultaneously
 
 @app.route('/api/apply_actions', methods=['POST'])
 def apply_actions():
-    actions = request.json
+    body = request.json
+    actions = body if isinstance(body, list) else body.get('actions', body)
+    source_label_id   = body.get('source_label_id') if isinstance(body, dict) else None
+    source_label_name = body.get('source_label_name') if isinstance(body, dict) else None
     # Capture credentials before entering the generator — Flask session not available in threads
     creds_data = session.get('credentials')
     if not creds_data:
@@ -369,39 +379,69 @@ def apply_actions():
                     skip_inbox = item.get('skipInbox', True)
                     auto_label = item.get('autoLabel', True)
 
-                    if auto_label:
-                        filter_action = {'addLabelIds': [label_id]}
-                        if skip_inbox:
-                            filter_action['removeLabelIds'] = ['INBOX']
-                        filter_body = {'criteria': {'from': email}, 'action': filter_action}
-                        try: exec_retry(service, service.users().settings().filters().create(
-                            userId='me', body=filter_body))
-                        except: pass
+                    if source_label_id:
+                        # Source is a label — move emails: remove source label, add destination
+                        msgs = []
+                        token = None
+                        while True:
+                            res = exec_retry(service, service.users().messages().list(
+                                userId='me', labelIds=[source_label_id],
+                                q=f"from:{email}",
+                                maxResults=MAX_MESSAGES_PER_PAGE, pageToken=token))
+                            msgs.extend(res.get('messages', []))
+                            token = res.get('nextPageToken')
+                            if not token: break
 
-                    msgs = []
-                    token = None
-                    while True:
-                        res = exec_retry(service, service.users().messages().list(
-                            userId='me', q=f"in:inbox from:{email}",
-                            maxResults=MAX_MESSAGES_PER_PAGE, pageToken=token))
-                        msgs.extend(res.get('messages', []))
-                        token = res.get('nextPageToken')
-                        if not token: break
+                        if msgs:
+                            all_ids = [m['id'] for m in msgs]
+                            modify_body = {
+                                'addLabelIds': [label_id],
+                                'removeLabelIds': [source_label_id]
+                            }
+                            batches = [all_ids[i:i + BATCH_SIZE] for i in range(0, len(all_ids), BATCH_SIZE)]
+                            for ids in batches:
+                                try: exec_retry(service, service.users().messages().batchModify(
+                                    userId='me', body={**modify_body, 'ids': ids}))
+                                except: pass
 
-                    if msgs:
-                        all_ids = [m['id'] for m in msgs]
-                        modify_body = {'addLabelIds': [label_id]}
-                        if skip_inbox:
-                            modify_body['removeLabelIds'] = ['INBOX']
-                        batches = [all_ids[i:i + BATCH_SIZE] for i in range(0, len(all_ids), BATCH_SIZE)]
-                        for ids in batches:
-                            try: exec_retry(service, service.users().messages().batchModify(
-                                userId='me', body={**modify_body, 'ids': ids}))
+                        return {"status": "row_complete", "email": email,
+                                "action": f"label:{label_id}",
+                                "msg": f"  - {email}: moved {len(msgs)} emails from '{source_label_name}' to label."}
+                    else:
+                        # Source is inbox — original behaviour
+                        if auto_label:
+                            filter_action = {'addLabelIds': [label_id]}
+                            if skip_inbox:
+                                filter_action['removeLabelIds'] = ['INBOX']
+                            filter_body = {'criteria': {'from': email}, 'action': filter_action}
+                            try: exec_retry(service, service.users().settings().filters().create(
+                                userId='me', body=filter_body))
                             except: pass
 
-                    return {"status": "row_complete", "email": email,
-                            "action": f"label:{label_id}",
-                            "msg": f"  - {email}: labelled {len(msgs)} emails."}
+                        msgs = []
+                        token = None
+                        while True:
+                            res = exec_retry(service, service.users().messages().list(
+                                userId='me', q=f"in:inbox from:{email}",
+                                maxResults=MAX_MESSAGES_PER_PAGE, pageToken=token))
+                            msgs.extend(res.get('messages', []))
+                            token = res.get('nextPageToken')
+                            if not token: break
+
+                        if msgs:
+                            all_ids = [m['id'] for m in msgs]
+                            modify_body = {'addLabelIds': [label_id]}
+                            if skip_inbox:
+                                modify_body['removeLabelIds'] = ['INBOX']
+                            batches = [all_ids[i:i + BATCH_SIZE] for i in range(0, len(all_ids), BATCH_SIZE)]
+                            for ids in batches:
+                                try: exec_retry(service, service.users().messages().batchModify(
+                                    userId='me', body={**modify_body, 'ids': ids}))
+                                except: pass
+
+                        return {"status": "row_complete", "email": email,
+                                "action": f"label:{label_id}",
+                                "msg": f"  - {email}: labelled {len(msgs)} emails."}
 
                 else:
                     return {"status": "row_complete", "email": email,

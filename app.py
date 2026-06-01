@@ -324,9 +324,9 @@ def apply_actions():
 
     def generate_updates():
 
-        def make_service():
+        def make_service(timeout=20):
             """Each worker thread gets its own HTTP connection and service object."""
-            http = httplib2.Http(timeout=20)
+            http = httplib2.Http(timeout=timeout)
             from google.oauth2.credentials import Credentials as OAuthCreds
             creds = OAuthCreds(**creds_data)
             authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
@@ -414,9 +414,16 @@ def apply_actions():
                             if skip_inbox:
                                 filter_action['removeLabelIds'] = ['INBOX']
                             filter_body = {'criteria': {'from': email}, 'action': filter_action}
-                            try: exec_retry(service, service.users().settings().filters().create(
-                                userId='me', body=filter_body))
-                            except: pass
+                            try:
+                                # Use a longer-timeout service for filter calls — they're slow
+                                filter_svc = make_service(timeout=30)
+                                filter_svc.users().settings().filters().create(
+                                    userId='me', body=filter_body).execute()
+                                filter_note = ' + filter created' + (' (skip inbox)' if skip_inbox else '')
+                            except Exception as fe:
+                                filter_note = f' ⚠ filter failed: {fe}'
+                        else:
+                            filter_note = ' (no filter — auto label off)'
 
                         msgs = []
                         token = None
@@ -441,7 +448,7 @@ def apply_actions():
 
                         return {"status": "row_complete", "email": email,
                                 "action": f"label:{label_id}",
-                                "msg": f"  - {email}: labelled {len(msgs)} emails."}
+                                "msg": f"  - {email}: labelled {len(msgs)} emails{filter_note}."}
 
                 else:
                     return {"status": "row_complete", "email": email,

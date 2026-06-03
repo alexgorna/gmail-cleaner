@@ -255,6 +255,23 @@
         <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small" onclick="showNewLabelModal()">
           <i class="bi bi-plus-lg me-1"></i> New label
         </button>
+
+        <!-- Bulk CSV -->
+        <div class="d-flex align-items-center gap-1">
+          <div class="btn-group">
+            <button class="btn btn-light text-secondary border rounded-start-pill px-3 py-2 small" onclick="downloadBulkCSV()" title="Download CSV template">
+              <i class="bi bi-download me-1"></i> Bulk CSV
+            </button>
+            <button class="btn btn-light text-secondary border rounded-end-pill px-2 py-2 small" onclick="document.getElementById('bulk-csv-upload').click()" title="Upload filled CSV">
+              <i class="bi bi-upload"></i>
+            </button>
+          </div>
+          <button class="btn btn-link btn-sm p-0 ms-1" style="color:#94a3b8;font-size:16px;line-height:1" onclick="showBulkCSVGuide()" title="How to use Bulk CSV">
+            <i class="bi bi-info-circle"></i>
+          </button>
+        </div>
+        <input type="file" id="bulk-csv-upload" accept=".csv" style="display:none" onchange="handleBulkCSVUpload(this)">
+
         <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small" id="btn-ai" onclick="toggleAIPanel()">
           <i class="bi bi-stars me-1"></i> AI Reorganize
         </button>
@@ -398,6 +415,80 @@
         <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
         <button class="btn btn-sm btn-danger" id="merge-confirm-btn" onclick="confirmMerge()" disabled>
           <i class="bi bi-diagram-2 me-1"></i>Queue merge
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Bulk CSV Guide -->
+<div class="modal fade" id="bulkCSVGuideModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header py-3">
+        <h6 class="modal-title fw-semibold"><i class="bi bi-file-earmark-spreadsheet me-1"></i>Bulk CSV — How it works</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" style="font-size:13px;color:#475569;line-height:1.7">
+        <p><strong>1. Download</strong> the CSV template — it's pre-filled with all your labels and email counts.</p>
+        <p><strong>2. Edit</strong> it in Excel, Numbers, or Google Sheets. Fill in only the columns you need — leave the rest blank.</p>
+        <p><strong>3. Upload</strong> the filled CSV using the <i class="bi bi-upload"></i> button. Operations are queued as pending changes so you can review before applying.</p>
+        <p><strong>4. Click Apply Changes</strong> to execute everything.</p>
+
+        <hr style="margin:14px 0">
+
+        <table class="table table-sm table-bordered" style="font-size:12px">
+          <thead style="background:#f8fafc">
+            <tr>
+              <th style="width:120px">Column</th>
+              <th>What to put</th>
+              <th>Example</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>label</code></td>
+              <td>Full label name (read-only — do not edit this column)</td>
+              <td><code>E-Commerce/Amazon</code></td>
+            </tr>
+            <tr>
+              <td><code>messages</code></td>
+              <td>Email count (read-only — for reference only)</td>
+              <td><code>2402</code></td>
+            </tr>
+            <tr>
+              <td><code>move_to_parent</code></td>
+              <td>Type the <strong>exact name</strong> of an existing parent label to move this label under it. Leave blank to keep current parent.</td>
+              <td><code>Shopping</code></td>
+            </tr>
+            <tr>
+              <td><code>rename</code></td>
+              <td>Type the new <strong>short name</strong> (just the last segment, not the full path). Can be combined with move_to_parent.</td>
+              <td><code>AWS</code></td>
+            </tr>
+            <tr>
+              <td><code>merge_into</code></td>
+              <td>Type the <strong>exact full name</strong> of the label this row should be merged into. This row's label is permanently deleted and its emails move to the target.</td>
+              <td><code>E-Commerce/Amazon</code></td>
+            </tr>
+            <tr>
+              <td><code>delete</code></td>
+              <td>Type <code>delete</code> to delete this label. Takes priority over all other columns.</td>
+              <td><code>delete</code></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:10px 12px;margin-top:10px">
+          <i class="bi bi-exclamation-triangle me-1" style="color:#c2410c"></i>
+          <strong style="color:#c2410c">Priority order when multiple columns are filled:</strong>
+          <span style="color:#92400e"> delete &gt; merge_into &gt; move_to_parent / rename</span>
+        </div>
+      </div>
+      <div class="modal-footer py-2">
+        <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+        <button class="btn btn-sm btn-primary" onclick="downloadBulkCSV();bootstrap.Modal.getInstance(document.getElementById('bulkCSVGuideModal')).hide()">
+          <i class="bi bi-download me-1"></i>Download template
         </button>
       </div>
     </div>
@@ -1070,6 +1161,163 @@ async function applyAccepted() {
     btn.innerHTML = 'Apply Changes';
     btn.disabled = (accepted.size + pendingManualOps.length) === 0;
   }
+}
+
+// ── Bulk CSV ──────────────────────────────────────────────────────────────
+
+function showBulkCSVGuide() {
+  new bootstrap.Modal(document.getElementById('bulkCSVGuideModal')).show();
+}
+
+function downloadBulkCSV() {
+  if (!flatAll.length) { log('Labels not loaded yet — please wait.', 'error'); return; }
+  const header = ['label', 'messages', 'move_to_parent', 'rename', 'merge_into', 'delete'];
+  const rows = [header];
+  [...flatAll].sort((a, b) => a.fullName.localeCompare(b.fullName)).forEach(n => {
+    rows.push([n.fullName, n.messagesTotal || 0, '', '', '', '']);
+  });
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = 'labels_bulk.csv'; a.click();
+  URL.revokeObjectURL(url);
+  log(`Downloaded CSV template with ${flatAll.length} labels.`, 'success');
+  document.getElementById('scan-debugger').style.display = 'block';
+}
+
+function _parseCSVRow(line) {
+  // Handles quoted fields (including commas and newlines inside quotes)
+  const result = [];
+  let cur = '', inQuote = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuote && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQuote = !inQuote;
+    } else if (ch === ',' && !inQuote) {
+      result.push(cur.trim()); cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  result.push(cur.trim());
+  return result;
+}
+
+function handleBulkCSVUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = ''; // reset so same file can be re-uploaded if needed
+
+  document.getElementById('scan-debugger').style.display = 'block';
+  log(`Reading CSV: ${file.name}…`, 'info');
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    const lines = e.target.result.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+    if (lines.length < 2) { log('CSV appears empty.', 'error'); return; }
+
+    // Parse header to find column indices (tolerant of extra columns / reordering)
+    const headers = _parseCSVRow(lines[0]).map(h => h.toLowerCase().replace(/\s+/g, '_'));
+    const col = name => headers.indexOf(name);
+    const iLabel       = col('label');
+    const iMoveParent  = col('move_to_parent');
+    const iRename      = col('rename');
+    const iMerge       = col('merge_into');
+    const iDelete      = col('delete');
+
+    if (iLabel === -1) { log('CSV missing required "label" column.', 'error'); return; }
+
+    // Build a name→node map for lookups
+    const nameMap = {};
+    flatAll.forEach(n => { nameMap[n.fullName] = n; });
+
+    let queued = 0, skipped = 0, errors = 0;
+
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue; // skip blank lines
+
+      const row        = _parseCSVRow(line);
+      const labelName  = iLabel     >= 0 ? (row[iLabel]      || '').trim() : '';
+      const moveParent = iMoveParent >= 0 ? (row[iMoveParent] || '').trim() : '';
+      const rename     = iRename    >= 0 ? (row[iRename]     || '').trim() : '';
+      const mergeInto  = iMerge     >= 0 ? (row[iMerge]      || '').trim() : '';
+      const delFlag    = iDelete    >= 0 ? (row[iDelete]     || '').trim().toLowerCase() : '';
+
+      if (!labelName) continue;
+
+      // Skip rows where ALL action columns are empty
+      if (!moveParent && !rename && !mergeInto && delFlag !== 'delete') {
+        skipped++;
+        continue;
+      }
+
+      const node = nameMap[labelName];
+      if (!node) {
+        log(`  ⚠ Row ${i}: label "${labelName}" not found — skipped.`, 'warn');
+        errors++;
+        continue;
+      }
+
+      // Priority: delete > merge > move/rename
+      if (delFlag === 'delete') {
+        const hasKids = flatAll.some(n => n.fullName.startsWith(labelName + '/'));
+        queueOp({
+          type: 'delete', labelId: node.id, fullName: labelName,
+          params: { labelName, labelId: node.id, cascade: false },
+          desc: `[CSV] Delete "${labelName}"`,
+        });
+        log(`  🗑 Queued delete: "${labelName}"`, 'info');
+        queued++;
+
+      } else if (mergeInto) {
+        const target = nameMap[mergeInto];
+        if (!target) {
+          log(`  ⚠ Row ${i}: merge target "${mergeInto}" not found — skipped.`, 'warn');
+          errors++;
+          continue;
+        }
+        // Block child→parent merges
+        if (labelName.startsWith(mergeInto + '/') || mergeInto.startsWith(labelName + '/')) {
+          log(`  ⛔ Row ${i}: cannot merge "${labelName}" into its parent/child — skipped.`, 'warn');
+          errors++;
+          continue;
+        }
+        queueOp({
+          type: 'merge', labelId: node.id, fullName: labelName,
+          params: { sourceNames: [labelName], sourceIds: [node.id], targetName: mergeInto, targetId: target.id },
+          desc: `[CSV] Merge "${labelName}" → "${mergeInto}"`,
+        });
+        log(`  ⇢ Queued merge: "${labelName}" → "${mergeInto}"`, 'info');
+        queued++;
+
+      } else if (moveParent || rename) {
+        const shortName  = rename || labelName.split('/').pop();
+        const newFull    = moveParent ? `${moveParent}/${shortName}` : shortName;
+        if (newFull === labelName) {
+          log(`  ⚠ Row ${i}: "${labelName}" — move/rename results in same name, skipped.`, 'warn');
+          errors++;
+          continue;
+        }
+        queueOp({
+          type: 'rename', labelId: node.id, fullName: labelName,
+          params: { oldName: labelName, newName: newFull, labelId: node.id },
+          desc: `[CSV] ${rename && moveParent ? 'Move+rename' : rename ? 'Rename' : 'Move'} "${labelName}" → "${newFull}"`,
+        });
+        log(`  ✏ Queued ${rename && moveParent ? 'move+rename' : rename ? 'rename' : 'move'}: "${labelName}" → "${newFull}"`, 'info');
+        queued++;
+      }
+    }
+
+    log(`CSV import done: ${queued} operation(s) queued, ${skipped} row(s) skipped (no changes), ${errors} error(s).`, queued > 0 ? 'success' : 'warn');
+    renderTree();
+    updateApplyBtn();
+  };
+
+  reader.onerror = () => log('Failed to read CSV file.', 'error');
+  reader.readAsText(file);
 }
 
 // ── Console log (identical to dashboard's logToScanDebugger) ─────────────

@@ -964,4 +964,4 @@ else:
 **User action required:** If the warning appears, the user must log out of the app and log back in to issue a new OAuth token that includes the filter scope.
 
 **Files changed:** `app.py`, `templates/dashboard.html`
-**Commit:** (pending push)
+**Commit:** `312b840` — deployed ✓

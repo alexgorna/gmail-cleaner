@@ -6,6 +6,7 @@ import httplib2
 import redis as redis_lib
 import google_auth_httplib2
 import concurrent.futures
+import threading
 from werkzeug.middleware.proxy_fix import ProxyFix
 from flask import Flask, render_template, request, redirect, url_for, session, jsonify, Response, stream_with_context
 from flask_session import Session
@@ -310,6 +311,8 @@ def ai_results(job_id):
 
 # --- APPLY ACTIONS ---
 PARALLEL_WORKERS = 5  # Process this many senders simultaneously
+# Gmail's filter API is slow and rate-limited — serialize filter creation to avoid timeouts
+_filter_lock = threading.Semaphore(1)
 
 @app.route('/api/apply_actions', methods=['POST'])
 def apply_actions():
@@ -422,14 +425,19 @@ def apply_actions():
                                 if skip_inbox:
                                     filter_action['removeLabelIds'] = ['INBOX']
                                 filter_body = {'criteria': {'from': email}, 'action': filter_action}
-                                try:
-                                    # Use a longer-timeout service for filter calls — they're slow
-                                    filter_svc = make_service(timeout=30)
-                                    filter_svc.users().settings().filters().create(
-                                        userId='me', body=filter_body).execute()
-                                    filter_note = ' + filter created' + (' (skip inbox)' if skip_inbox else '')
-                                except Exception as fe:
-                                    filter_note = f' ⚠ filter failed: {fe}'
+                                with _filter_lock:
+                                    # Serialize filter creation — Gmail's filter API times out under parallel load
+                                    try:
+                                        filter_svc = make_service(timeout=60)
+                                        filter_svc.users().settings().filters().create(
+                                            userId='me', body=filter_body).execute()
+                                        filter_note = ' + filter created' + (' (skip inbox)' if skip_inbox else '')
+                                    except Exception as fe:
+                                        fe_str = str(fe)
+                                        if 'Filter already exists' in fe_str:
+                                            filter_note = ' + filter already exists (skip inbox)' if skip_inbox else ' + filter already exists'
+                                        else:
+                                            filter_note = f' ⚠ filter failed: {fe}'
                         else:
                             filter_note = ' (no filter — auto label off)'
 

@@ -741,15 +741,227 @@ When renaming a parent label (e.g. "Banco" → "Banks"), the endpoint:
 4. Then renames the parent itself
 5. Returns `childrenRenamed` count to client for display in the log
 
-**Pending UX redesign (discussed, not yet implemented):**
-User identified that the labels page acts immediately on every tree action (pencil → rename fires instantly, trash → delete fires after one confirm modal) — this is the opposite of the dashboard pattern where you select actions across rows and click a single Apply Changes at the end.
-
-Proposed redesign:
-- Pencil/Move/Delete add ops to a `pendingManualOps` queue instead of executing immediately
-- Tree nodes show visual indicators for pending changes (strikethrough for delete, arrow for rename, etc.)
-- Toolbar shows "N pending changes" pill when queue is non-empty
-- Single Apply Changes button handles both AI suggestions and manual pending ops via streaming endpoint
-- Each pending op can be cancelled from the tree node before applying
-
 **Files changed:** `app.py`, `templates/labels.html`
 **Commits:** `2d93821`, `68adc51`
+
+---
+
+### 28b. Feature — Queue + Apply Changes UX for /labels (May 29 2026)
+
+**Context:** User identified that the labels page fired each action immediately (rename on Enter, delete after one modal confirm), which is the opposite of the dashboard pattern where you queue everything then click Apply once.
+
+**Implementation:**
+- All three tree actions — rename, move, delete — now queue into `pendingManualOps` array instead of executing immediately
+- Each queued op shows a visual chip on the label row: `✏ → NewName` (rename), `→ Parent` (move), `🗑 delete` / `🗑 + children` (delete), all with an `×` cancel button
+- A counter badge in the toolbar shows the total of AI-accepted + manual-queued ops; "Apply Changes" button stays disabled at zero
+- `applyAccepted()` drains both `accepted` (AI) and `pendingManualOps` (manual) into a single operations array, sends to `/api/labels/apply_plan` streaming endpoint, and clears both queues on completion
+- `cancelManualOp(labelId)` removes an op from the queue and re-renders the tree
+- Message counts displayed in parentheses next to each label name, fetched via Gmail batch API (25 per chunk, 150ms sleep, retry failures individually)
+- Color-error fix: `patch_name()` helper in `apply_plan` retries a rename with `color: {}` if Gmail rejects with 400 (invalid color palette)
+
+**Files changed:** `app.py`, `templates/labels.html`
+
+---
+
+### 29. Fix — AI Hallucinations (chunked calls) + Re-run Button (May 29 2026)
+
+**Problem 1 — 74% hallucination rate:**
+Sending all 474 labels to DeepSeek in a single call caused the model to invent label names that don't exist (e.g., suggesting "Google Alerts" when only "Google/Google Alerts" exists). Backend validation dropped these, resulting in 7/9 suggestions discarded. Root cause: 474 names is too many for the model to track reliably in one context window.
+
+**Fix:**
+- Split label list into chunks of 80
+- Run one DeepSeek call per chunk (~6 calls total for 474 labels), each with `max_tokens: 2000`
+- Each call receives: (a) SUBSET of 80 labels to analyze, (b) FULL list of 474 for context (so it can reference any label as a merge target/parent)
+- Results from all chunks are combined, then run through the existing validation layer
+- 0.5s sleep between chunks to avoid rate limiting
+- Chunk failures are caught and logged (other chunks still run)
+
+**Problem 2 — Re-run button closed panel:**
+Clicking "AI Reorganize" a second time toggled `aiOpen = false` and closed the panel instead of re-running analysis.
+
+**Fix:**
+- `toggleAIPanel()` now checks: if panel already open → call `runAIAnalysis()` directly; if closed → open it and run analysis.
+
+**Files changed:** `app.py`, `templates/labels.html`
+**Commit:** `be5bccb`
+
+---
+
+### 30. Fix — Dashboard AI crash "sequence item 0: expected str instance, dict found" (May 29 2026)
+
+**Problem:** Dashboard AI suggestions failing after ~4s with "sequence item 0: expected str instance, dict found". Error originated in `ai_labeler.py:_call_provider()` at `'\n'.join(existing_labels)` — `existing_labels` was receiving label dicts instead of plain name strings. Most likely cause: Celery worker running a previous version of the code that passed full label objects rather than just their names.
+
+**Fix:** Made `_call_provider` defensive — normalizes `existing_labels` before joining: if an item is a dict, extracts `item['name']`; otherwise calls `str(item)`. This handles any shape the argument arrives in.
+
+**Files changed:** `ai_labeler.py`
+**Commit:** `f04fd2a`
+
+---
+
+### 31. Feature — Manual Merge UI on /labels page (May 29 2026)
+
+**Request:** User wanted to manually merge two labels (pick which to delete, which to keep), mirroring what the AI merge does but driven by the user.
+
+**Implementation:**
+- Added a merge icon button (`bi-diagram-2`) to every label row in the tree, alongside rename/move/delete
+- New "Merge label" modal with:
+  - Red "source" panel showing the label you clicked (the one that will be deleted)
+  - Searchable dropdown (`<input>` + `<select size="6">`) to pick the target label (the one that survives)
+  - "Swap source and target" link to reverse the direction without reopening the modal
+  - Inline warning that updates as you select: shows the destructive consequence, and blocks merging a label with its own parent/child (same guard as AI)
+  - "Queue merge" button (disabled until a valid target is selected)
+- On confirm, queues a `{type:'merge'}` op into `pendingManualOps` with the same shape as AI merge ops (`sourceNames`, `sourceIds`, `targetName`, `targetId`)
+- Tree chip for pending merge shows "⇢ merge into '<target>'" in red (same style as delete chip)
+- Apply Changes executes it through the existing `/api/labels/apply_plan` streaming endpoint
+
+**Files changed:** `templates/labels.html`
+**Commit:** `755837c`
+
+---
+
+### 32. Fix — Filter update timeout + Apply Changes UX feedback (May 29 2026)
+
+**Problem 1 — Filter update timing out:**
+During a merge, `settings.filters.list()` was being called once per source label using the main service (10s timeout). On Railway this timed out, producing `⚠ Could not update filters`. The merge itself succeeded (emails moved, label deleted) but Gmail filters weren't updated.
+
+**Fix:**
+- Build a dedicated `filter_svc` with 30s timeout ONCE before the source loop
+- Pre-fetch the full filter list once (instead of once per source)
+- Reuse the cached list for all sources in the merge — no repeated slow API calls
+- `filter_svc = None` guard: if the fetch fails, filter update is skipped gracefully with a warning
+- Refactored `generate()` to build the service from `get_creds()` directly (so `creds` is available for the filter service)
+
+**Problem 2 — No "in progress" or "done" feedback on Apply Changes button:**
+While a merge runs (e.g. moving 2402 emails), the button went grey and nothing else changed. User couldn't tell if it was working or done.
+
+**Fix:**
+- Button shows spinner + "Applying…" while streaming
+- On success: flashes green "✓ Done" for 2 seconds, then restores "Apply Changes"
+- On error: restores "Apply Changes" immediately
+
+**Files changed:** `app.py`, `templates/labels.html`
+**Commit:** `7320876`
+
+---
+
+### 33. Feature — Scan any label as source (May 29 2026)
+
+**Request:** On the main dashboard, after the inbox scan completes, let the user switch to any Gmail label as the scan source and reorganize emails within it — moving them to a different label.
+
+**UX:**
+- Inbox scan always runs first on load (unchanged)
+- After scan completes, a **"Scanning: Inbox ▾"** pill appears in a bar between the controls and subheader
+- Dropdown lists all user labels (sorted); selecting one immediately re-runs the scan against that label
+- Hero text updates: "You have X emails in 'LabelName'."
+- While scanning, progress bar shows "Scanning 'LabelName' (X%)"
+- Skip Inbox / Auto Label checkboxes are hidden when source is a label (inbox-only concept)
+- Selecting a new source resets `pendingActions` so stale selections from a previous scan don't carry over
+
+**Move semantics (label source):**
+- When source is a label: messages are fetched using `labelIds=[source_label_id]` + `from:{email}` query
+- `batchModify` adds the destination label AND removes the source label (`removeLabelIds: [source_label_id]`)
+- No Gmail filter is created (filter creation is inbox-specific)
+- Apply log shows: `"moved X emails from 'LabelName' to label"`
+
+**Inbox source (unchanged behaviour):**
+- Messages fetched with `q=in:inbox from:{email}`
+- Skip Inbox / Auto Label checkboxes shown as before
+- Gmail filter created if Auto Label is on
+
+**Backend changes:**
+- `POST /api/start_scan`: accepts optional `source_label_id` and `source_label_name` in JSON body; passes to Celery task
+- `tasks.py run_inbox_scan`: accepts `source_label_id`/`source_label_name` kwargs; uses `labelIds=[source_label_id]` in Phase 1 list; stores source info in progress and results
+- `POST /api/apply_actions`: accepts `{actions, source_label_id, source_label_name}` dict body (backwards compatible with plain list); routes label action to inbox or label path based on `source_label_id`
+
+**Files changed:** `app.py`, `tasks.py`, `templates/dashboard.html`
+**Commit:** `847b955`
+
+---
+
+### 34. Fix — Rescan source label crash (null progress-wrapper) (May 29 2026)
+
+**Problem:** Selecting a label from the source picker after a scan completed threw a null error on `document.getElementById('scan-progress-wrapper').style.display = ''` because that element was replaced when the scan completion rewrote `hero-status-content`. The error aborted `startScan()` before the fetch fired.
+
+**Fix:** Removed the pre-replacement `.style.display` line — `startScan()` now unconditionally replaces `hero-status-content` innerHTML (which creates the progress elements) before doing anything else.
+
+**Files changed:** `templates/dashboard.html`
+**Commit:** `d2762cb`
+
+---
+
+### 35. Fix — Gmail filter creation silently failing (May 29 2026)
+
+**Problem:** After applying a label action with Skip Inbox + Auto Label checked, emails from the same sender kept landing in inbox. The `settings.filters.create()` call was using a 20s-timeout service inside `exec_retry`, timing out silently due to bare `except: pass`.
+
+**Fix:**
+- `make_service(timeout=20)` now accepts a timeout parameter
+- Filter creation uses `make_service(timeout=30)` — dedicated longer-timeout service
+- Removed `exec_retry` wrapper for filter (it doesn't retry on timeout anyway)
+- Filter result logged back into the SSE stream per row: `+ filter created (skip inbox)` or `⚠ filter failed: <reason>`
+- `filter_note` always defined (covers auto_label=False case too)
+
+**Files changed:** `app.py`
+**Commit:** `52b60ea`
+
+---
+
+### 36. Feature — Bulk CSV reorganize on /labels page (May 29 2026)
+
+**What it does:**
+- **Download template**: "Bulk CSV" button downloads a CSV pre-filled with all labels and message counts. Columns 3–6 are empty for the user to fill in.
+- **Upload & process**: Upload icon button triggers a file picker. Parsed entirely in JS — no backend route needed. Each row with any action column filled gets queued into `pendingManualOps`. Blank rows and rows with all-empty action columns are skipped.
+- **Apply Changes**: executes through the existing `/api/labels/apply_plan` streaming endpoint.
+- **Guide modal**: ⓘ info icon opens a modal explaining all 6 columns with examples and priority order.
+- **System log**: every queued operation and every skip/error is logged to the console window.
+
+**CSV columns:**
+1. `label` — full name including parent path (read-only)
+2. `messages` — email count (read-only)
+3. `move_to_parent` — exact name of existing parent to move under
+4. `rename` — new short name (last segment only); can combine with move_to_parent
+5. `merge_into` — full name of target label; source is deleted, emails moved (same as UI merge)
+6. `delete` — type "delete" to queue deletion
+
+**Priority order:** delete > merge_into > move_to_parent/rename
+
+**Safeguards:**
+- Merge blocked if source/target are parent-child (same guard as UI and backend)
+- Unknown label names logged as warnings and skipped
+- Same name after move/rename logged as warning and skipped
+
+**Files changed:** `templates/labels.html`
+**Commit:** `7ab827c`
+
+---
+
+### 37. Fix — Filter creation scope check + warning visibility (June 17 2026)
+
+**Problem:** After applying a label action with Auto Label checked, Gmail filters were silently not being created. Two bugs compounded:
+
+1. **Silent failure in frontend:** `logToScanDebugger(jsonLog.msg, 'success')` always logged messages green — even `⚠ filter failed: ...` errors appeared as green successes, hiding the problem from the user.
+2. **Missing scope in session token:** Users who authenticated before `gmail.settings.basic` was added to `SCOPES` had session tokens without the filter permission. The `settings.filters.create()` call returned 403, which was caught and logged — but invisibly (bug 1). No guidance was shown to re-authenticate.
+
+**Fixes:**
+
+**`templates/dashboard.html`** — `logToScanDebugger` call for `row_complete` messages now uses `'warn'` level (yellow) when the message contains `⚠`, `'success'` (green) otherwise:
+```javascript
+// Before:
+logToScanDebugger(jsonLog.msg, 'success');
+// After:
+logToScanDebugger(jsonLog.msg, jsonLog.msg.includes('⚠') ? 'warn' : 'success');
+```
+
+**`app.py`** — before attempting filter creation, checks if the stored session token includes `gmail.settings.basic`. If the scope is absent, emits a clear re-login warning instead of making a doomed API call:
+```python
+stored_scopes = set(creds_data.get('scopes') or [])
+settings_scope = 'https://www.googleapis.com/auth/gmail.settings.basic'
+if stored_scopes and settings_scope not in stored_scopes:
+    filter_note = ' ⚠ filter skipped — log out and back in to grant Gmail filter permission'
+else:
+    # ... existing try/except filter creation block
+```
+
+**User action required:** If the warning appears, the user must log out of the app and log back in to issue a new OAuth token that includes the filter scope.
+
+**Files changed:** `app.py`, `templates/dashboard.html`
+**Commit:** (pending push)

@@ -1506,7 +1506,7 @@
                             }
                             
                             if (jsonLog.msg) {
-                                logToScanDebugger(jsonLog.msg, 'success');
+                                logToScanDebugger(jsonLog.msg, jsonLog.msg.includes('⚠') ? 'warn' : 'success');
                             }
                         } 
                         else if (jsonLog.status === 'complete') {

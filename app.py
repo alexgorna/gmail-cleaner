@@ -410,18 +410,26 @@ def apply_actions():
                     else:
                         # Source is inbox — original behaviour
                         if auto_label:
-                            filter_action = {'addLabelIds': [label_id]}
-                            if skip_inbox:
-                                filter_action['removeLabelIds'] = ['INBOX']
-                            filter_body = {'criteria': {'from': email}, 'action': filter_action}
-                            try:
-                                # Use a longer-timeout service for filter calls — they're slow
-                                filter_svc = make_service(timeout=30)
-                                filter_svc.users().settings().filters().create(
-                                    userId='me', body=filter_body).execute()
-                                filter_note = ' + filter created' + (' (skip inbox)' if skip_inbox else '')
-                            except Exception as fe:
-                                filter_note = f' ⚠ filter failed: {fe}'
+                            # Guard: check if the session token has the settings scope.
+                            # If it was issued before gmail.settings.basic was added to SCOPES,
+                            # the filter call will 403 — surface a clear re-login message instead.
+                            stored_scopes = set(creds_data.get('scopes') or [])
+                            settings_scope = 'https://www.googleapis.com/auth/gmail.settings.basic'
+                            if stored_scopes and settings_scope not in stored_scopes:
+                                filter_note = ' ⚠ filter skipped — log out and back in to grant Gmail filter permission'
+                            else:
+                                filter_action = {'addLabelIds': [label_id]}
+                                if skip_inbox:
+                                    filter_action['removeLabelIds'] = ['INBOX']
+                                filter_body = {'criteria': {'from': email}, 'action': filter_action}
+                                try:
+                                    # Use a longer-timeout service for filter calls — they're slow
+                                    filter_svc = make_service(timeout=30)
+                                    filter_svc.users().settings().filters().create(
+                                        userId='me', body=filter_body).execute()
+                                    filter_note = ' + filter created' + (' (skip inbox)' if skip_inbox else '')
+                                except Exception as fe:
+                                    filter_note = f' ⚠ filter failed: {fe}'
                         else:
                             filter_note = ' (no filter — auto label off)'
 

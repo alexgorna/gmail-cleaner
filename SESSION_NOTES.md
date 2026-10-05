@@ -1084,4 +1084,24 @@ Alex chose "measure, then tune" over guessing new thresholds.
 - `jev_labeler.py`: each sender logs one line `[jev-diag] email | personal=… | picks=[(label, conf) per chunk] | final=(label, conf) | -> action`. Controlled by `JEV_DIAG_LOG` (default true; set `false` once tuning is done, since it writes sender addresses to the Railway logs).
 - `dashboard.html`: the info tooltip on a Jev recommendation shows "Recommendation confidence: NN%".
 - Next: read the diag lines from one real scan, pick `JEV_PERSONAL_THRESHOLD` / `JEV_MIN_CONFIDENCE` / `JEV_CANDIDATE_MIN` from the actual score distribution (these are env vars, so tuning needs no code push).
+**Commit:** `f11a5d2`, deployed ✓.
+
+**Findings from the diag log (195 senders, Oct 5 04:56):** 93 decided, 102 unknown.
+- Kohl's → "Promos." at 97% was wrong for Alex's system (one sub-label per brand). Two causes: Jev saw a flat list of names with no structure, and the finalist round rubber-stamped a single candidate against `__none__` (42% → 97%). 8 recommendations were inflated this way; Dunkin' (99% in its chunk) and Domino's (98%) were real two-way finals and correct.
+- Most "misses" had no existing label at all (Atlassian, Elevault, EstateSales): correct to skip, they need a new label.
+- Personal question is ambiguous for this user: vgornatti@gmail.com 0.73, recruiters 0.60–0.77 (filed under Emprego/Job Opp, which Jev picked correctly 13 times).
+
+---
+
+### 45. Folder-aware Jev (October 5 2026)
+
+Alex approved the redesign.
+- `jev_labeler.py` rewritten around the label tree (`build_label_tree`): call 1 asks `personal` + `folder` (Choice over top-level labels; each folder described as "Folder with N sub-labels, for example: …"). If the pick is a folder (confidence ≥ `JEV_FOLDER_MIN` 0.60), call 2 chooses among its sub-labels + `__new__` (chunked if > 254; a final round only when ≥ 2 real chunk winners; a single winner keeps its own score).
+- Decision order: existing label ≥ 0.70 → `use_existing`; else personal ≥ `JEV_PERSONAL_THRESHOLD` (now **0.70**) → `no_label`; else folder known but no sub-label → **`new_in_folder`** (parent); else unknown. Parent folders are never recommended as a destination.
+- Page: `new_in_folder` rows say "Belongs under **Promos.**, no label for it yet." with **Ask AI for a name**. The top AI button includes these rows. Requests send `hints: {email: folder}`; `app.py` passes them as `folder_hint`; DeepSeek's prompt gets `| folder: "Promos."` and a rule to create "Promos./<Brand>" or reuse an existing sub-label, never a bare folder.
+- `applyAISuggestion` now ignores `no_label` and `new_in_folder` (previously "Apply all" would hit `suggestion.label` undefined on a no_label row).
+- Thread-safe stats; worker log line now counts existing / person / new-in-folder / unknown and total calls.
+- Cost: options per request drop from 490 to (top-level count) + (one folder's sub-labels).
+
+**Verified:** mocked label tree shaped like Alex's (Promos. with 300 sub-labels, Travels, Emprego, Health, plain Amazon/Netflix): Dunkin' found in the second Promos. chunk at its own 97% (no final round), Kohl's → new_in_folder Promos., recruiter → Emprego/Job Opp even with personal 0.61, vgornatti → no_label (0.73), Amazon (plain label) → use_existing, Amazon Health → new_in_folder Health, every request ≤ 255 options. Headless page test: new_in_folder row text/button, top AI sends hint `{promo@shop.com: "Promos."}`, no page errors. DeepSeek prompt line contains `folder: "Promos."`.
 **Commit:** pending push

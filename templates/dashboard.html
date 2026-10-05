@@ -849,6 +849,10 @@
                 if (suggestion.action === 'no_label') {
                     hintText.innerHTML = `<span class="ai-no-label-warning"><i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> Applying a label not recommended.</span>`;
                     hintDiv.appendChild(hintText);
+                } else if (suggestion.action === 'new_in_folder') {
+                    hintText.innerHTML = `Belongs under <strong>${escapeHtml(suggestion.parent)}</strong>, no label for it yet.`;
+                    hintDiv.appendChild(hintText);
+                    hintDiv.appendChild(_askAIButton(row.email, 'Ask AI for a name'));
                 } else {
                     const verb = suggestion.action === 'use_existing' ? 'Existing label' : 'Creating label';
                     let tooltipText = suggestion.action === 'use_existing'
@@ -894,7 +898,21 @@
                 mobileAiRow.className = 'mobile-ai-row';
                 mobileAiRow.setAttribute('data-ai-email', row.email);
 
-                if (suggestion.action === 'no_label') {
+                if (suggestion.action === 'new_in_folder') {
+                    const t = document.createElement('span');
+                    t.className = 'ai-hint-text';
+                    t.innerHTML = `Belongs under <strong>${escapeHtml(suggestion.parent)}</strong>, no label for it yet.`;
+                    mobileAiRow.appendChild(t);
+                    const nb = document.createElement('div');
+                    nb.className = 'mobile-ai-buttons';
+                    nb.appendChild(_askAIButton(row.email, 'Ask AI for a name'));
+                    const md = document.createElement('button');
+                    md.className = 'btn-ai-dismiss';
+                    md.textContent = '✕ Dismiss';
+                    md.onclick = () => dismissAISuggestion(row.email);
+                    nb.appendChild(md);
+                    mobileAiRow.appendChild(nb);
+                } else if (suggestion.action === 'no_label') {
                     const warn = document.createElement('span');
                     warn.className = 'ai-no-label-warning';
                     warn.innerHTML = '<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> Applying a label not recommended.';
@@ -938,18 +956,7 @@
 
                 actionCell.insertBefore(mobileAiRow, actionCell.firstChild);
             } else if (_needsAskAI(row)) {
-                const asking = aiAsking.has(row.email);
-                const makeAskBtn = (cls) => {
-                    const b = document.createElement('button');
-                    b.className = 'btn-ai-apply ' + cls;
-                    b.innerHTML = asking
-                        ? '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Asking AI…'
-                        : '<i class="bi bi-stars me-1" aria-hidden="true"></i>Ask AI';
-                    b.disabled = asking;
-                    b.title = 'Ask AI to suggest a label for this sender';
-                    b.onclick = (e) => { e.stopPropagation(); requestAISuggestions([row.email]); };
-                    return b;
-                };
+                const makeAskBtn = (cls) => _askAIButton(row.email, 'Ask AI');
                 const askDiv = document.createElement('div');
                 askDiv.className = 'ai-hint';
                 askDiv.setAttribute('data-ai-email', row.email);
@@ -1597,6 +1604,26 @@
         return escapeHtml(JSON.stringify(String(str)));
     }
 
+    function _askAIButton(email, label) {
+        const asking = aiAsking.has(email);
+        const b = document.createElement('button');
+        b.className = 'btn-ai-apply ask-ai-btn';
+        b.innerHTML = asking
+            ? '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Asking AI…'
+            : `<i class="bi bi-stars me-1" aria-hidden="true"></i>${escapeHtml(label)}`;
+        b.disabled = asking;
+        b.title = 'Ask AI to suggest a label for this sender';
+        b.onclick = (e) => { e.stopPropagation(); requestAISuggestions([email]); };
+        return b;
+    }
+
+    // Rows the top AI button covers: no recommendation yet, or Jev knows the folder but not the name
+    function _wantsAI(row) {
+        const sug = aiSuggestions[row.email];
+        if (sug && sug.action === 'new_in_folder') return !row.processedAction && !aiAppliedRows.has(row.email);
+        return _needsAskAI(row);
+    }
+
     // A row gets "Ask AI" once Jev has finished (or is off) and the row has no recommendation
     function _needsAskAI(row) {
         if (jevState === 'idle' || jevState === 'running') return false;
@@ -1611,7 +1638,7 @@
         // Top button: every sender Jev didn't recognize. Row button: just that sender.
         const displayedSenders = perRow
             ? onlyEmails.filter(e => !aiAsking.has(e))
-            : allData.filter(_needsAskAI).map(row => row.email).filter(e => !aiAsking.has(e));
+            : allData.filter(_wantsAI).map(row => row.email).filter(e => !aiAsking.has(e));
         const senderCount = displayedSenders.length;
         if (!senderCount) {
             if (!perRow) logToScanDebugger('AI: every sender already has a recommendation.', 'info');
@@ -1636,7 +1663,9 @@
             const startRes = await fetch('/api/suggest_labels', {
                 method: 'POST',
                 headers: { 'X-CSRFToken': csrfToken, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ senders: displayedSenders })
+                body: JSON.stringify({ senders: displayedSenders, hints: Object.fromEntries(
+                    displayedSenders.filter(e => aiSuggestions[e] && aiSuggestions[e].action === 'new_in_folder')
+                                    .map(e => [e, aiSuggestions[e].parent])) })
             });
             const startData = await startRes.json().catch(() => ({}));
 
@@ -1778,6 +1807,9 @@
             if (d.action === 'no_label') {
                 aiSuggestions[email] = { action: 'no_label', source: 'jev', confidence: d.confidence };
                 added++;
+            } else if (d.action === 'new_in_folder' && d.parent) {
+                aiSuggestions[email] = { action: 'new_in_folder', parent: d.parent, source: 'jev', confidence: d.confidence };
+                added++;
             } else if (d.action === 'use_existing' && d.label) {
                 const match = existingLabels.find(l => l.type === 'user' && l.name === d.label);
                 if (!match) continue;  // label vanished: leave the row to "Ask AI"
@@ -1855,7 +1887,7 @@
 
     async function applyAISuggestion(email) {
         const suggestion = aiSuggestions[email];
-        if (!suggestion) return;
+        if (!suggestion || suggestion.action === 'new_in_folder' || suggestion.action === 'no_label') return;
 
         if (suggestion.action === 'use_existing' && suggestion.labelId) {
             // Already exists — just select it in the dropdown

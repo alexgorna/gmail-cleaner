@@ -320,12 +320,14 @@ def run_jev_classify(job_id, senders, label_names):
 
         decisions, unresolved, stats = jev_labeler.classify_with_jev(
             client, senders, label_names, on_result=on_result, phase_timeout=JEV_ONLOAD_TIMEOUT)
-        print(f"[jev] on-load: {len(decisions)} decided, {len(unresolved)} unknown, "
-              f"{stats['jev_errors']} errors, {stats['input_tokens']} input tokens, {stats['seconds']}s, "
-              f"chunks={stats['label_chunks']}, model={stats['model']}")
+        by_action = Counter(d['action'] for d in decisions.values())
+        print(f"[jev] on-load: {by_action.get('use_existing', 0)} existing label, {by_action.get('no_label', 0)} person, "
+              f"{by_action.get('new_in_folder', 0)} new-in-folder, {len(senders) - len(decisions)} unknown, "
+              f"{stats['jev_errors']} errors, {stats['jev_calls']} calls, {stats['input_tokens']} input tokens, "
+              f"{stats['seconds']}s, model={stats['model']}")
         all_failed = stats['senders_answered'] and stats['jev_errors'] == stats['senders_answered']
         set_status({'status': 'failed' if all_failed else 'complete', 'done': len(senders), 'total': len(senders),
-                    'decided': len(decisions), 'unknown': len(unresolved), 'errors': stats['jev_errors'],
+                    'decided': len(decisions), 'unknown': len(senders) - len(decisions), 'errors': stats['jev_errors'],
                     'seconds': stats['seconds'], 'model': stats['model']})
     except Exception as e:
         print(f'[jev] on-load job failed: {type(e).__name__}: {e}')

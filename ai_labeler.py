@@ -84,6 +84,8 @@ Rules:
 - "parent" is only included when action is "create_new" and you recommend nesting — set to the parent label name only (e.g. "Finance"), omit otherwise
 - Every sender in the input must appear in exactly one group — no sender may be omitted or duplicated
 - Keep group_name short and recognizable (company or brand name, not domain)
+- When a sender line ends with folder: "X", the user has already decided this sender belongs in folder X: use an existing label under X if one matches, otherwise create_new with label "X/<Brand>" and parent "X" (keep X exactly as written, including punctuation)
+- The user's folders hold one sub-label per company (e.g. "Promos./Costco"); never suggest a bare folder as the label for a company
 - When the user has no existing labels or none seem relevant, invent sensible top-level category labels
 - Return only valid JSON"""
 
@@ -173,11 +175,13 @@ def _call_provider(config: dict, api_key: str, senders: list, existing_labels: l
         if isinstance(s, dict):
             email    = s.get('email', '')
             subjects = s.get('subjects') or []
+            line = email
             if subjects:
                 quoted = ', '.join(f'"{subj}"' for subj in subjects[:3])
-                sender_lines.append(f"{email} | subjects: {quoted}")
-            else:
-                sender_lines.append(email)
+                line += f" | subjects: {quoted}"
+            if s.get('folder_hint'):
+                line += f' | folder: "{s["folder_hint"]}"'
+            sender_lines.append(line)
         else:
             sender_lines.append(s)
 

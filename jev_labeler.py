@@ -1,23 +1,26 @@
 """
-Jev hybrid labeler: Jev (TypeSafe System One) makes fast, cheap decisions; the LLM only names new labels.
+Jev labeler: Jev (TypeSafe System One) makes fast, cheap decisions about which EXISTING label fits a sender.
 
-How it works, per sender (email + up to 3 recent subjects):
-  1. One Jev call answers two questions in parallel:
-       - "personal": Noul, probability the sender is a real person writing ad-hoc mail
-       - "label":    Choice over the user's EXISTING labels, plus a "none fits" option
-  2. Routing:
-       personal >= JEV_PERSONAL_THRESHOLD              -> action "no_label"
-       label != none and confidence >= JEV_MIN_CONFIDENCE -> action "use_existing"
-       anything else                                   -> sent to the LLM (DeepSeek) to group and name
-  3. If Jev is unavailable (missing key, auth, network), everything goes to the LLM as before.
+Folder-aware, two steps per sender (email + up to 3 recent subjects):
+  1. One call: "personal" (Noul: is this a real person?) + "folder" (Choice over TOP-LEVEL labels; folders are
+     described with a few of their sub-labels so Jev understands the structure).
+  2. If the chosen top-level label is a folder: one call choosing among its sub-labels, plus "__new__"
+     (no sub-label fits; a new one is needed in this folder). Folders bigger than 254 sub-labels are split into
+     chunks in the same request; a final round runs only when two or more chunk winners are real candidates
+     (a single candidate keeps its own score: no rubber-stamp final against "none").
 
-Env vars:
-  TYPESAFE_API_KEY        required for Jev (read by the SDK)
-  JEV_MODEL               default "jev-1.13.0" (pinned for reproducible results)
-  JEV_MIN_CONFIDENCE      default 0.70
-  JEV_PERSONAL_THRESHOLD  default 0.80
-  JEV_CONCURRENCY         default 8 parallel requests
-  JEV_PHASE_TIMEOUT       default 45 s; senders Jev hasn't answered by then go to the LLM
+Decision order:
+  existing label with confidence >= JEV_MIN_CONFIDENCE        -> use_existing
+  personal >= JEV_PERSONAL_THRESHOLD                           -> no_label
+  folder confidence >= JEV_FOLDER_MIN and no sub-label fits   -> new_in_folder (the LLM names it later)
+  otherwise                                                    -> unknown (the page offers "Ask AI")
+
+A parent folder is never recommended as a destination by itself (the user's convention is one sub-label per
+brand, e.g. Promos./Costco).
+
+Env vars: TYPESAFE_API_KEY, JEV_ENABLED, JEV_MODEL (jev-1.13.0), JEV_MIN_CONFIDENCE (0.70),
+JEV_PERSONAL_THRESHOLD (0.70), JEV_FOLDER_MIN (0.60), JEV_CANDIDATE_MIN (0.35), JEV_CONCURRENCY (8),
+JEV_PHASE_TIMEOUT (45 s), JEV_DIAG_LOG (true).
 
 Email subjects are attacker-controlled text. Jev can only return one of the options we give it,
 so a malicious subject can at worst cause a wrong (but valid) pick, never arbitrary output.
@@ -26,21 +29,25 @@ so a malicious subject can at worst cause a wrong (but valid) pick, never arbitr
 import os
 import re
 import time
+import threading
 import concurrent.futures
 
 JEV_MODEL              = os.environ.get('JEV_MODEL', 'jev-1.13.0')
 JEV_MIN_CONFIDENCE     = float(os.environ.get('JEV_MIN_CONFIDENCE', '0.70'))
-JEV_PERSONAL_THRESHOLD = float(os.environ.get('JEV_PERSONAL_THRESHOLD', '0.80'))
+JEV_PERSONAL_THRESHOLD = float(os.environ.get('JEV_PERSONAL_THRESHOLD', '0.70'))
+JEV_FOLDER_MIN         = float(os.environ.get('JEV_FOLDER_MIN', '0.60'))
 JEV_CONCURRENCY        = int(os.environ.get('JEV_CONCURRENCY', '8'))
 JEV_PHASE_TIMEOUT      = int(os.environ.get('JEV_PHASE_TIMEOUT', '45'))
 JEV_DIAG_LOG           = os.environ.get('JEV_DIAG_LOG', 'true').lower() == 'true'  # per-sender score log for tuning
 
 NONE_OPTION   = '__none__'
-MAX_OPTIONS   = 255          # Jev Choice limit, including NONE_OPTION
+NEW_OPTION    = '__new__'
+MAX_OPTIONS   = 255          # Jev Choice limit, including the extra option
 CHUNK_SIZE    = MAX_OPTIONS - 1
-CANDIDATE_MIN = float(os.environ.get('JEV_CANDIDATE_MIN', '0.35'))  # stage-1 bar to become a finalist
+CANDIDATE_MIN = float(os.environ.get('JEV_CANDIDATE_MIN', '0.35'))  # chunk winner must reach this to enter a final
 MAX_SUBJECTS  = 3
 MAX_SUBJ_LEN  = 200
+EXAMPLES_PER_FOLDER = 6
 
 _PERSONAL_Q = {
     'type': 'noul',
@@ -50,10 +57,19 @@ _PERSONAL_Q = {
     ),
 }
 
-_LABEL_INSTRUCTIONS = (
-    'Which of the user\'s existing Gmail labels is the best folder for all email from this sender? '
-    f'Pick "{NONE_OPTION}" if none of the labels is a good fit.'
+_FOLDER_INSTRUCTIONS = (
+    "The user organizes Gmail with labels. These are the user's top-level labels; folders hold one sub-label "
+    "per company or topic. Which top-level label does email from this sender belong under? "
+    f'Pick "{NONE_OPTION}" if none of them is a good fit.'
 )
+
+
+def _sub_instructions(folder):
+    return (
+        f'Email from this sender belongs in the "{folder}" folder, which holds one sub-label per company or topic. '
+        'Which existing sub-label is the right place for all email from this sender? '
+        f'Pick "{NEW_OPTION}" if none of these sub-labels is specifically about this sender\'s company or topic.'
+    )
 
 
 def jev_available():
@@ -78,7 +94,43 @@ def _sender_state(s):
 
 def _label_names(existing_labels):
     names = [l['name'] if isinstance(l, dict) else str(l) for l in (existing_labels or [])]
-    return [n for n in dict.fromkeys(names) if n and n != NONE_OPTION]
+    return [n for n in dict.fromkeys(names) if n and n not in (NONE_OPTION, NEW_OPTION)]
+
+
+def build_label_tree(labels):
+    """
+    Returns (top_levels, children):
+      top_levels: ordered list of top-level label names (first path segment, existing or implied)
+      children:   {top_level: [full names of every label below it]}  (empty list = plain label, not a folder)
+    """
+    top_levels, children = [], {}
+    for name in labels:
+        top = name.split('/', 1)[0]
+        if top not in children:
+            children[top] = []
+            top_levels.append(top)
+        if name != top:
+            children[top].append(name)
+    return top_levels, children
+
+
+def _folder_question(top_levels, children):
+    criteria = {}
+    for top in top_levels:
+        kids = children[top]
+        if kids:
+            examples = ', '.join(k.split('/', 1)[1] for k in kids[:EXAMPLES_PER_FOLDER])
+            criteria[top] = f'Folder with {len(kids)} sub-labels, for example: {examples}'
+        else:
+            criteria[top] = None
+    criteria[NONE_OPTION] = 'None of these top-level labels fits this sender.'
+    return {'type': 'choice', 'instructions': _FOLDER_INSTRUCTIONS, 'criteria': criteria}
+
+
+def _sub_question(folder, names):
+    criteria = {n: None for n in names}
+    criteria[NEW_OPTION] = f'No existing sub-label fits; this sender needs a new sub-label inside "{folder}".'
+    return {'type': 'choice', 'instructions': _sub_instructions(folder), 'criteria': criteria}
 
 
 def _group_name_from_email(email):
@@ -94,87 +146,107 @@ def _group_name_from_email(email):
     return re.sub(r'[._+-]+', ' ', local).strip().title() or email
 
 
-def _ask_jev(client, state, questions):
-    return client.system_one(state=state, questions=questions)
+def _ask_jev(client, state, questions, stats, lock):
+    resp = client.system_one(state=state, questions=questions)
+    with lock:
+        stats['jev_calls'] += 1
+        stats['model'] = getattr(resp, 'model', None) or stats['model']
+        stats['input_tokens'] += (getattr(getattr(resp, 'usage', None), 'input_tokens', 0) or 0)
+    return resp
 
 
-def _label_question(names):
-    criteria = {name: None for name in names}
-    criteria[NONE_OPTION] = 'None of these labels fits this sender well.'
-    return {'type': 'choice', 'instructions': _LABEL_INSTRUCTIONS, 'criteria': criteria}
+def _pick_in_folder(client, state, folder, kids, stats, lock, diag):
+    """Choose a sub-label of `folder`. Returns (label_or_NEW, confidence)."""
+    chunks = [kids[i:i + CHUNK_SIZE] for i in range(0, len(kids), CHUNK_SIZE)]
+    qs = {f'sub_{i}': _sub_question(folder, c) for i, c in enumerate(chunks)}
+    resp = _ask_jev(client, state, qs, stats, lock)
+    picks = [resp.choices.get(f'sub_{i}') for i in range(len(chunks))]
+    picks = [p for p in picks if p is not None]
+    diag['sub_picks'] = [(p.choice, round(p.confidence, 3)) for p in picks]
+    real = [p for p in picks if p.choice != NEW_OPTION and p.confidence >= CANDIDATE_MIN]
+    if len(real) >= 2:
+        # Several chunk winners: let them compete directly so the scores are comparable
+        final = _ask_jev(client, state, {'sub': _sub_question(folder, [p.choice for p in real])}, stats, lock)
+        with lock:
+            stats['finalist_rounds'] += 1
+        p = final.choices.get('sub')
+        diag['sub_final'] = (p.choice, round(p.confidence, 3)) if p else None
+        return (p.choice, p.confidence) if p else (NEW_OPTION, 0.0)
+    if len(real) == 1:
+        return real[0].choice, real[0].confidence      # keep its own score: no rubber-stamp final
+    best_new = max((p.confidence for p in picks if p.choice == NEW_OPTION), default=0.0)
+    return NEW_OPTION, best_new
 
 
-def _decide_one(client, state, base_questions, n_chunks, stats, diag=None):
+def _decide_one(client, state, top_levels, children, stats, lock, diag):
     """
-    One sender. Labels beyond Jev's 255-option limit are split into chunks asked in the SAME request
-    (one Choice per chunk). When there is more than one chunk, the best pick of each chunk becomes a
-    finalist and a second request chooses among the finalists, so confidences are comparable.
-    Returns ('no_label', p) | ('use_existing', label, conf) | None.
+    Returns one of:
+      ('use_existing', label, conf) | ('no_label', p) | ('new_in_folder', folder, conf) | None
     """
-    resp = _ask_jev(client, state, base_questions)
-    stats['jev_calls'] += 1
-    stats['model'] = getattr(resp, 'model', None) or stats['model']
-    stats['input_tokens'] += (getattr(getattr(resp, 'usage', None), 'input_tokens', 0) or 0)
+    qs = {'personal': _PERSONAL_Q}
+    if top_levels:
+        qs['folder'] = _folder_question(top_levels, children)
+    resp = _ask_jev(client, state, qs, stats, lock)
 
-    diag = diag if diag is not None else {}
     personal = resp.nouls.get('personal')
-    diag['personal'] = round(personal.noul, 3) if personal is not None else None
-    raw_picks = [resp.choices.get(f'label_{i}') for i in range(n_chunks)]
-    diag['picks'] = [(p.choice, round(p.confidence, 3)) for p in raw_picks if p is not None]
-    if personal is not None and personal.noul >= JEV_PERSONAL_THRESHOLD:
-        return ('no_label', personal.noul)
-    if n_chunks == 0:
-        return None
+    p_personal = personal.noul if personal is not None else 0.0
+    diag['personal'] = round(p_personal, 3)
+    folder_ans = resp.choices.get('folder')
+    diag['folder'] = (folder_ans.choice, round(folder_ans.confidence, 3)) if folder_ans else None
 
-    picks = raw_picks
-    picks = [p for p in picks if p is not None and p.choice != NONE_OPTION]
-    if n_chunks == 1:
-        p = picks[0] if picks else None
-        return ('use_existing', p.choice, p.confidence) if p and p.confidence >= JEV_MIN_CONFIDENCE else None
+    label_choice, folder_for_new = None, None
+    if folder_ans and folder_ans.choice != NONE_OPTION:
+        folder = folder_ans.choice
+        kids = children.get(folder, [])
+        if not kids:
+            # A plain top-level label (no sub-labels) is a real destination
+            if folder_ans.confidence >= JEV_MIN_CONFIDENCE:
+                label_choice = (folder, folder_ans.confidence)
+        elif folder_ans.confidence >= JEV_FOLDER_MIN:
+            sub, conf = _pick_in_folder(client, state, folder, kids, stats, lock, diag)
+            # Folder already passed JEV_FOLDER_MIN; the sub-label must pass JEV_MIN_CONFIDENCE on its own
+            if sub != NEW_OPTION and conf >= JEV_MIN_CONFIDENCE:
+                label_choice = (sub, conf)
+            else:
+                folder_for_new = (folder, folder_ans.confidence)
 
-    finalists = [p.choice for p in picks if p.confidence >= CANDIDATE_MIN]
-    if not finalists:
-        return None
-    final = _ask_jev(client, state, {'label': _label_question(finalists)})
-    stats['jev_calls'] += 1
-    stats['finalist_rounds'] += 1
-    stats['input_tokens'] += (getattr(getattr(final, 'usage', None), 'input_tokens', 0) or 0)
-    p = final.choices.get('label')
-    if p:
-        diag['final'] = (p.choice, round(p.confidence, 3))
-    if p and p.choice != NONE_OPTION and p.confidence >= JEV_MIN_CONFIDENCE:
-        return ('use_existing', p.choice, p.confidence)
+    if label_choice:
+        return ('use_existing', label_choice[0], label_choice[1])
+    if p_personal >= JEV_PERSONAL_THRESHOLD:
+        return ('no_label', p_personal)
+    if folder_for_new:
+        return ('new_in_folder', folder_for_new[0], folder_for_new[1])
     return None
 
 
 def classify_with_jev(client, senders, existing_labels, on_result=None, phase_timeout=None):
     """
     Returns (decisions, unresolved, stats).
-      decisions:  {email: {'action': 'no_label'|'use_existing', 'label'?: str, 'confidence': float}}
-      unresolved: list of the original sender items Jev could not decide confidently
+      decisions:  {email: {'action': 'no_label'|'use_existing'|'new_in_folder', 'label'?, 'parent'?, 'confidence'}}
+      unresolved: list of the original sender items Jev could not decide
     on_result(email, decision_or_None) is called as each sender finishes (used for live page updates).
     """
     phase_timeout = phase_timeout or JEV_PHASE_TIMEOUT
     labels = _label_names(existing_labels)
-    chunks = [labels[i:i + CHUNK_SIZE] for i in range(0, len(labels), CHUNK_SIZE)]
-    questions = {'personal': _PERSONAL_Q}
-    for i, chunk in enumerate(chunks):
-        questions[f'label_{i}'] = _label_question(chunk)
-    if len(chunks) > 1:
-        print(f'[jev] {len(labels)} labels -> {len(chunks)} chunks + finalist round')
+    top_levels, children = build_label_tree(labels)
+    if len(top_levels) > CHUNK_SIZE:
+        print(f'[jev] {len(top_levels)} top-level labels; only the first {CHUNK_SIZE} are offered')
+        top_levels = top_levels[:CHUNK_SIZE]
+    folders = sum(1 for t in top_levels if children[t])
+    print(f'[jev] {len(labels)} labels -> {len(top_levels)} top-level ({folders} folders)')
 
     decisions, unresolved = {}, []
     stats = {'senders_answered': 0, 'jev_calls': 0, 'jev_errors': 0, 'jev_timeouts': 0,
-             'finalist_rounds': 0, 'input_tokens': 0, 'model': None, 'label_chunks': len(chunks)}
+             'finalist_rounds': 0, 'input_tokens': 0, 'model': None, 'top_levels': len(top_levels)}
+    lock = threading.Lock()
     started = time.monotonic()
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=JEV_CONCURRENCY)
-    futures = {}
-    diags = {}
+    futures, diags = {}, {}
     for item in senders:
         email, state = _sender_state(item)
         diags[email] = {}
-        futures[pool.submit(_decide_one, client, state, questions, len(chunks), stats, diags[email])] = (item, email)
+        futures[pool.submit(_decide_one, client, state, top_levels, children, stats, lock, diags[email])] = (item, email)
 
     done_items = set()
     try:
@@ -188,19 +260,21 @@ def classify_with_jev(client, senders, existing_labels, on_result=None, phase_ti
                 stats['jev_errors'] += 1
                 if stats['jev_errors'] <= 3:
                     print(f'[jev] call failed for one sender: {type(e).__name__}: {e}')
-                unresolved.append(item)
-                continue
-            if outcome is None:
+                outcome = 'error'
+            if outcome in (None, 'error'):
                 unresolved.append(item)
             elif outcome[0] == 'no_label':
                 decisions[email] = {'action': 'no_label', 'confidence': round(outcome[1], 3)}
+            elif outcome[0] == 'use_existing':
+                decisions[email] = {'action': 'use_existing', 'label': outcome[1], 'confidence': round(outcome[2], 3)}
             else:
-                decisions[email] = {'action': 'use_existing', 'label': outcome[1],
-                                    'confidence': round(outcome[2], 3)}
+                decisions[email] = {'action': 'new_in_folder', 'parent': outcome[1], 'confidence': round(outcome[2], 3)}
+                unresolved.append(item)   # still needs a name from the LLM
             if JEV_DIAG_LOG:
                 dg = diags.get(email, {})
-                print(f"[jev-diag] {email} | personal={dg.get('personal')} | picks={dg.get('picks')} "
-                      f"| final={dg.get('final')} | -> {decisions.get(email, {}).get('action', 'unknown')}")
+                print(f"[jev-diag] {email} | personal={dg.get('personal')} | folder={dg.get('folder')} "
+                      f"| sub={dg.get('sub_picks')} | final={dg.get('sub_final')} "
+                      f"| -> {decisions.get(email, {}).get('action', 'unknown')} {decisions.get(email, {}).get('label') or decisions.get(email, {}).get('parent') or ''}")
             if on_result:
                 try:
                     on_result(email, decisions.get(email))
@@ -224,6 +298,8 @@ def _decisions_to_groups(decisions):
     """Turn per-sender Jev decisions into the app's suggestion-group schema."""
     groups = {}
     for email, d in decisions.items():
+        if d['action'] not in ('use_existing', 'no_label'):
+            continue   # new_in_folder senders are also in `unresolved` and get named by the LLM
         name = _group_name_from_email(email)
         key = (d['action'], d.get('label'), name)
         g = groups.setdefault(key, {'senders': [], 'group_name': name, 'action': d['action'], 'source': 'jev'})
@@ -281,7 +357,7 @@ def suggest_labels_hybrid(senders, existing_labels, llm_fn):
 
     meta = {
         'provider': 'hybrid',
-        'jev_resolved': len(decisions),
+        'jev_resolved': sum(1 for d in decisions.values() if d['action'] in ('use_existing', 'no_label')),
         'llm_resolved': len(unresolved) if not llm_error else 0,
         'llm_error': llm_error,
         **stats,

@@ -287,10 +287,15 @@ def suggest_labels():
 
     # Enrich each sender with up to 3 representative subjects for better AI context
     subjects_map = {item['email']: item.get('subjects', []) for item in (scan_data or [])}
-    senders_with_subjects = [
-        {'email': email, 'subjects': subjects_map.get(email, [])}
-        for email in senders
-    ]
+    # Optional folder hints from Jev ("belongs under Promos.") so the AI names a sub-label in that folder
+    hints = body.get('hints') if isinstance(body.get('hints'), dict) else {}
+    senders_with_subjects = []
+    for email in senders:
+        item = {'email': email, 'subjects': subjects_map.get(email, [])}
+        hint = hints.get(email)
+        if isinstance(hint, str) and 0 < len(hint) <= 200:
+            item['folder_hint'] = hint
+        senders_with_subjects.append(item)
 
     # Fetch the user's current label list from Gmail
     label_names = []

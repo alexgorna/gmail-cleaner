@@ -2,7 +2,9 @@
 AI Label Suggester — pluggable email grouping & Gmail label suggestion.
 
 Feature flag : AI_LABELING_ENABLED   (default: true)  — set to "false" to disable entirely
-Provider      : AI_PROVIDER           (default: deepseek) — swap to "openai" or any key in PROVIDER_CONFIGS
+Provider      : AI_PROVIDER           (default: deepseek) — swap to "openai" or any key in PROVIDER_CONFIGS,
+                                        or "hybrid" = Jev decides first, the LLM (HYBRID_LLM_PROVIDER) names the rest
+Hybrid LLM    : HYBRID_LLM_PROVIDER   (default: deepseek) — LLM used for senders Jev can't place (see jev_labeler.py)
 Max senders   : AI_MAX_SENDERS        (default: 500)
 Timeout       : AI_TIMEOUT_SECONDS    (default: 90)  — read timeout per chunk; connect timeout is fixed at 10s
 
@@ -22,6 +24,7 @@ AI_LABELING_ENABLED = os.environ.get('AI_LABELING_ENABLED', 'true').lower() == '
 AI_PROVIDER        = os.environ.get('AI_PROVIDER', 'deepseek')
 AI_MAX_SENDERS     = int(os.environ.get('AI_MAX_SENDERS', '500'))
 AI_TIMEOUT_SECONDS = int(os.environ.get('AI_TIMEOUT_SECONDS', '90'))
+HYBRID_LLM_PROVIDER = os.environ.get('HYBRID_LLM_PROVIDER', 'deepseek')
 
 # ── Provider registry ──────────────────────────────────────────────────────────
 # To swap providers: add an entry here and set AI_PROVIDER=<key> in env.
@@ -104,10 +107,22 @@ def suggest_labels(senders: list, existing_labels: list) -> dict:
     if not AI_LABELING_ENABLED:
         raise RuntimeError('AI labeling is disabled (AI_LABELING_ENABLED=false)')
 
-    config = PROVIDER_CONFIGS.get(AI_PROVIDER)
+    if AI_PROVIDER == 'hybrid':
+        import jev_labeler
+        return jev_labeler.suggest_labels_hybrid(
+            senders[:AI_MAX_SENDERS], existing_labels,
+            llm_fn=lambda s, l: _suggest_with_llm(s, l, HYBRID_LLM_PROVIDER),
+        )
+
+    return _suggest_with_llm(senders, existing_labels, AI_PROVIDER)
+
+
+def _suggest_with_llm(senders: list, existing_labels: list, provider: str) -> dict:
+    """Original LLM-only path: group senders and suggest labels with one chat-completion provider."""
+    config = PROVIDER_CONFIGS.get(provider)
     if not config:
         raise RuntimeError(
-            f'Unknown AI_PROVIDER: "{AI_PROVIDER}". '
+            f'Unknown AI provider: "{provider}". '
             f'Valid options: {list(PROVIDER_CONFIGS.keys())}'
         )
 

@@ -1004,4 +1004,24 @@ else:
 **Verified:** `py_compile` OK, inline JS passes `node --check`, Flask smoke test (prod without secret fails fast; headers + `Secure; HttpOnly; SameSite=Lax` cookie present; dev still works), `jsArg` round-trip with a quote/script payload, sender parser rejects HTML payloads.
 
 **Deploy order (requires approval):** 1) set `FLASK_SECRET_KEY` + `ENVIRONMENT=production` on `web`, 2) push. Pushing first would crash `web` (fail-closed).
-**Commit:** pending approval
+**Commit:** `68decce` (pushed via GitHub Desktop), deployed ✓ Oct 5 2026. Railway vars set on `web`: `FLASK_SECRET_KEY` (new random), `ENVIRONMENT=production`. Old GitHub tokens were already expired and have been deleted. Redis confirmed on private network (`redis.railway.internal`).
+
+---
+
+### 40. Jev hybrid labeler (October 5 2026)
+
+**Backup first:** annotated tag `pre-jev-2026-10-05` on `68decce` (last DeepSeek-only version, deployed and working) plus a zip snapshot at `_backups/pre-jev-2026-10-05_68decce.zip`. `.gitignore` now excludes `_backups/` and the old `backup_*` folders. Rollback options: Railway "Redeploy" on the Oct 5 04:17 deployment, or set `AI_PROVIDER=deepseek` (instant, no code change).
+
+**What changed:**
+- New `jev_labeler.py`. For each sender (email + up to 3 subjects), one Jev System One call asks two questions at once: `personal` (Noul: is this a real person?) and `label` (Choice over the user's existing labels plus `__none__`). Routing: personal ≥ 0.80 → `no_label`; label ≠ none with confidence ≥ 0.70 → `use_existing`; everything else goes to DeepSeek, which still names new labels.
+- Fallbacks: no `TYPESAFE_API_KEY`, client error, or every Jev call failing → the whole job runs on DeepSeek exactly as before. If DeepSeek fails on the leftover senders, Jev's answers are still returned. Senders Jev hasn't answered within `JEV_PHASE_TIMEOUT` (45 s) go to DeepSeek.
+- `ai_labeler.py`: new `AI_PROVIDER=hybrid` mode; the old body moved to `_suggest_with_llm(senders, labels, provider)`. Default is still `deepseek`, so deploying this code changes nothing until the variable is flipped.
+- Results carry `meta` (jev_resolved, llm_resolved, errors, input tokens, seconds, model) and each group has `source: jev|llm`. The frontend ignores both for now.
+- `requirements.txt`: `typesafe-sdk==0.7.2` (real SDK: `client.system_one(state=..., questions=...)`, answers in `response.nouls[...]` / `response.choices[...]` with `.confidence`). Model pinned to `jev-1.13.0` via `JEV_MODEL`.
+- Tunables (env): `JEV_MIN_CONFIDENCE`, `JEV_PERSONAL_THRESHOLD`, `JEV_CONCURRENCY` (8), `JEV_PHASE_TIMEOUT`, `HYBRID_LLM_PROVIDER` (deepseek).
+- Security: email subjects are untrusted, but Jev can only return one of the options we give it, so prompt injection can at worst cause a wrong valid pick.
+
+**Verified (container, real SDK with a mocked HTTP transport):** happy path (3 of 4 senders by Jev, 1 to DeepSeek, every sender covered once), no-key fallback, bad-key fallback over the network, phase-timeout fallback, `AI_PROVIDER` routing, group-name extraction (`mail.ibm.com` → Ibm, `bbc.co.uk` → Bbc).
+
+**To turn on:** set `AI_PROVIDER=hybrid` on the `gmail-cleaner` worker in Railway. `TYPESAFE_API_KEY` is already set there.
+**Commit:** pending push

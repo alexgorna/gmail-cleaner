@@ -11,3 +11,4 @@ httplib2
 redis
 requests
 werkzeug
+typesafe-sdk==0.7.2

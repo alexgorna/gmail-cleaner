@@ -6,3 +6,7 @@ venv/
 client_secret.json
 token.json
 credentials.json
+# Local backups (not for GitHub)
+_backups/
+backup_stable_2026_05_21/
+backup_ux_epic/

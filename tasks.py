@@ -213,6 +213,9 @@ def _set_ai_status(r, job_id, data):
 AI_HARD_TIMEOUT = int(os.environ.get('AI_TIMEOUT_SECONDS', '90')) + 30
 
 
+AI_BATCH_SIZE = int(os.environ.get('AI_BATCH_SIZE', '50'))  # DeepSeek output stays under max_tokens at ~50 senders
+
+
 @celery_app.task
 def run_ai_suggestions(job_id, senders, label_names):
     """
@@ -226,18 +229,40 @@ def run_ai_suggestions(job_id, senders, label_names):
     })
 
     try:
-        # Run the AI call in a thread so we can impose a hard wall-clock timeout.
-        # The requests-level timeout=(10, 90) catches most hangs; this catches the rest
-        # (e.g. keepalive bytes that reset the per-chunk timer).
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(ai_labeler.suggest_labels, senders, label_names)
-            try:
-                result = future.result(timeout=AI_HARD_TIMEOUT)
-            except concurrent.futures.TimeoutError:
-                raise TimeoutError(
-                    f'AI call exceeded hard timeout of {AI_HARD_TIMEOUT}s — '
-                    f'no response from provider after {len(senders)} senders'
-                )
+        # Large requests are split into batches of AI_BATCH_SIZE so DeepSeek's answer is never truncated.
+        # Each batch runs in a thread with a hard wall-clock timeout; the requests-level timeout=(10, 90)
+        # catches most hangs, this catches the rest (e.g. keepalive bytes that reset the per-chunk timer).
+        batches = [senders[i:i + AI_BATCH_SIZE] for i in range(0, len(senders), AI_BATCH_SIZE)] or [[]]
+        result = {'suggestions': []}
+        failed_batches = 0
+        for n, batch in enumerate(batches, 1):
+            if len(batches) > 1:
+                _set_ai_status(r, job_id, {
+                    'status': 'running',
+                    'message': f'Batch {n}/{len(batches)}: analysing {len(batch)} senders…',
+                    'partial_groups': len(result['suggestions']),
+                })
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(ai_labeler.suggest_labels, batch, label_names)
+                try:
+                    part = future.result(timeout=AI_HARD_TIMEOUT)
+                    result['suggestions'].extend(part.get('suggestions', []))
+                except concurrent.futures.TimeoutError:
+                    failed_batches += 1
+                    print(f'[ai] batch {n}/{len(batches)} exceeded {AI_HARD_TIMEOUT}s')
+                    if len(batches) == 1:
+                        raise TimeoutError(
+                            f'AI call exceeded hard timeout of {AI_HARD_TIMEOUT}s — '
+                            f'no response from provider after {len(senders)} senders'
+                        )
+                except Exception as e:
+                    failed_batches += 1
+                    print(f'[ai] batch {n}/{len(batches)} failed: {e}')
+                    if len(batches) == 1:
+                        raise
+        if failed_batches == len(batches):
+            raise RuntimeError('All AI batches failed')
+        result['failed_batches'] = failed_batches
 
         group_count = len(result.get('suggestions', []))
         r.setex(f'ai:{job_id}:result', AI_JOB_TTL, json.dumps(result))
@@ -252,3 +277,62 @@ def run_ai_suggestions(job_id, senders, label_names):
             'error': str(e),
             'senders_sent': len(senders),
         })
+
+
+# ── Jev on page load ───────────────────────────────────────────────────────────
+
+JEV_JOB_TTL = 3600
+JEV_MAX_SENDERS = int(os.environ.get('JEV_MAX_SENDERS', '2000'))
+JEV_ONLOAD_TIMEOUT = int(os.environ.get('JEV_ONLOAD_TIMEOUT', '600'))
+
+
+@celery_app.task
+def run_jev_classify(job_id, senders, label_names):
+    """
+    Classify every scanned sender with Jev right after the scan. Each answer is written to Redis as it
+    arrives (hash jev:{job_id}:decisions) so the page can show recommendations progressively.
+    Senders Jev can't place get no entry; the page offers "Ask AI" (DeepSeek) for those.
+    """
+    import jev_labeler
+    r = get_redis_client()
+    status_key, dec_key = f'jev:{job_id}:status', f'jev:{job_id}:decisions'
+    senders = senders[:JEV_MAX_SENDERS]
+    done = {'n': 0}
+
+    def set_status(data):
+        r.setex(status_key, JEV_JOB_TTL, json.dumps(data))
+
+    set_status({'status': 'running', 'done': 0, 'total': len(senders)})
+    client = None
+    try:
+        client = jev_labeler._make_client()
+        if client is None:
+            set_status({'status': 'off', 'done': 0, 'total': len(senders)})
+            return
+
+        def on_result(email, decision):
+            done['n'] += 1
+            if decision:
+                r.hset(dec_key, email, json.dumps(decision))
+                r.expire(dec_key, JEV_JOB_TTL)
+            if done['n'] % 10 == 0:
+                set_status({'status': 'running', 'done': done['n'], 'total': len(senders)})
+
+        decisions, unresolved, stats = jev_labeler.classify_with_jev(
+            client, senders, label_names, on_result=on_result, phase_timeout=JEV_ONLOAD_TIMEOUT)
+        print(f"[jev] on-load: {len(decisions)} decided, {len(unresolved)} unknown, "
+              f"{stats['jev_errors']} errors, {stats['input_tokens']} input tokens, {stats['seconds']}s, "
+              f"chunks={stats['label_chunks']}, model={stats['model']}")
+        all_failed = stats['senders_answered'] and stats['jev_errors'] == stats['senders_answered']
+        set_status({'status': 'failed' if all_failed else 'complete', 'done': len(senders), 'total': len(senders),
+                    'decided': len(decisions), 'unknown': len(unresolved), 'errors': stats['jev_errors'],
+                    'seconds': stats['seconds'], 'model': stats['model']})
+    except Exception as e:
+        print(f'[jev] on-load job failed: {type(e).__name__}: {e}')
+        set_status({'status': 'failed', 'error': str(e), 'done': done['n'], 'total': len(senders)})
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass

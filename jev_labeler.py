@@ -55,6 +55,10 @@ _LABEL_INSTRUCTIONS = (
 )
 
 
+def jev_available():
+    return bool(os.environ.get('TYPESAFE_API_KEY', '').strip()) and os.environ.get('JEV_ENABLED', 'true').lower() == 'true'
+
+
 def _make_client():
     """Build a TypeSafe client, or return None when Jev is not configured."""
     if not os.environ.get('TYPESAFE_API_KEY', '').strip():
@@ -136,12 +140,14 @@ def _decide_one(client, state, base_questions, n_chunks, stats):
     return None
 
 
-def classify_with_jev(client, senders, existing_labels):
+def classify_with_jev(client, senders, existing_labels, on_result=None, phase_timeout=None):
     """
     Returns (decisions, unresolved, stats).
       decisions:  {email: {'action': 'no_label'|'use_existing', 'label'?: str, 'confidence': float}}
       unresolved: list of the original sender items Jev could not decide confidently
+    on_result(email, decision_or_None) is called as each sender finishes (used for live page updates).
     """
+    phase_timeout = phase_timeout or JEV_PHASE_TIMEOUT
     labels = _label_names(existing_labels)
     chunks = [labels[i:i + CHUNK_SIZE] for i in range(0, len(labels), CHUNK_SIZE)]
     questions = {'personal': _PERSONAL_Q}
@@ -163,7 +169,7 @@ def classify_with_jev(client, senders, existing_labels):
 
     done_items = set()
     try:
-        for fut in concurrent.futures.as_completed(futures, timeout=JEV_PHASE_TIMEOUT):
+        for fut in concurrent.futures.as_completed(futures, timeout=phase_timeout):
             item, email = futures[fut]
             done_items.add(fut)
             stats['senders_answered'] += 1
@@ -182,13 +188,18 @@ def classify_with_jev(client, senders, existing_labels):
             else:
                 decisions[email] = {'action': 'use_existing', 'label': outcome[1],
                                     'confidence': round(outcome[2], 3)}
+            if on_result:
+                try:
+                    on_result(email, decisions.get(email))
+                except Exception as e:
+                    print(f'[jev] on_result callback failed: {e}')
     except concurrent.futures.TimeoutError:
         for fut, (item, _email) in futures.items():
             if fut not in done_items:
                 fut.cancel()
                 stats['jev_timeouts'] += 1
                 unresolved.append(item)
-        print(f'[jev] phase timeout after {JEV_PHASE_TIMEOUT}s; {stats["jev_timeouts"]} senders sent to LLM')
+        print(f'[jev] phase timeout after {phase_timeout}s; {stats["jev_timeouts"]} senders left undecided')
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 

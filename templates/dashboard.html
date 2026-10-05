@@ -512,10 +512,10 @@
                     <!-- AI bulk controls — shown once suggestions are loaded -->
                     <div id="ai-bulk-controls" class="d-none d-flex align-items-center gap-2 me-2">
                         <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small" onclick="dismissAllAI()">
-                            Dismiss AI
+                            Dismiss all
                         </button>
                         <button class="btn btn-outline-secondary rounded-pill px-3 py-2 small fw-bold" onclick="applyAllAI()">
-                            Apply AI
+                            Apply all
                         </button>
                     </div>
                     <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small me-2" onclick="window.location.reload()" title="Reload">
@@ -524,7 +524,7 @@
                     <button class="btn btn-light text-secondary border rounded-pill px-3 py-2 small me-2" onclick="downloadCSV()">
                         <i class="bi bi-download"></i> CSV
                     </button>
-                    <button id="ai-suggest-btn" class="btn btn-light text-secondary border rounded-pill px-3 py-2 small me-2" onclick="requestAISuggestions()">
+                    <button id="ai-suggest-btn" class="btn btn-light text-secondary border rounded-pill px-3 py-2 small me-2" onclick="requestAISuggestions()" title="Ask AI about every sender that has no recommendation yet">
                         <i class="bi bi-stars me-1"></i> AI
                     </button>
                     <button id="apply-btn" class="btn btn-primary rounded-pill px-4 py-2 small fw-bold" onclick="applyChanges()">
@@ -683,6 +683,13 @@
     let sessionOrganizedCount = 0;
     let aiSuggestions = {};   // { email: { action, label, labelId, parent, groupName } }
     let aiAppliedRows = new Set();  // emails where AI suggestion has been applied this session
+    // Jev runs automatically after each scan; DeepSeek ("Ask AI") only for senders Jev doesn't recognize
+    let jevState = 'idle';          // idle | running | complete | off | failed
+    let jevJobId = null;
+    let jevPollTimer = null;
+    let jevSeen = new Set();        // emails already merged from Jev (so a dismissed one isn't re-added)
+    let aiAsking = new Set();       // emails with an in-flight per-row "Ask AI" request
+    const AI_BTN_HTML = '<i class="bi bi-stars me-1"></i> AI';
 
     window.onload = async function() {
         fetchUserInfo();
@@ -866,7 +873,7 @@
 
                     const applyBtn = document.createElement('button');
                     applyBtn.className = 'btn-ai-apply';
-                    applyBtn.textContent = 'Apply AI';
+                    applyBtn.textContent = suggestion.source === 'jev' ? 'Apply recommendation' : 'Apply AI';
                     applyBtn.onclick = () => applyAISuggestion(row.email);
 
                     hintDiv.appendChild(hintText);
@@ -911,7 +918,7 @@
 
                     const mobApply = document.createElement('button');
                     mobApply.className = 'btn-ai-apply';
-                    mobApply.textContent = 'Apply AI';
+                    mobApply.textContent = suggestion.source === 'jev' ? 'Apply recommendation' : 'Apply AI';
                     mobApply.onclick = () => applyAISuggestion(row.email);
                     btns.appendChild(mobApply);
 
@@ -925,6 +932,37 @@
                 }
 
                 actionCell.insertBefore(mobileAiRow, actionCell.firstChild);
+            } else if (_needsAskAI(row)) {
+                const asking = aiAsking.has(row.email);
+                const makeAskBtn = (cls) => {
+                    const b = document.createElement('button');
+                    b.className = 'btn-ai-apply ' + cls;
+                    b.innerHTML = asking
+                        ? '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Asking AI…'
+                        : '<i class="bi bi-stars me-1" aria-hidden="true"></i>Ask AI';
+                    b.disabled = asking;
+                    b.title = 'Ask AI to suggest a label for this sender';
+                    b.onclick = (e) => { e.stopPropagation(); requestAISuggestions([row.email]); };
+                    return b;
+                };
+                const askDiv = document.createElement('div');
+                askDiv.className = 'ai-hint';
+                askDiv.setAttribute('data-ai-email', row.email);
+                const askText = document.createElement('span');
+                askText.className = 'ai-hint-text';
+                askText.textContent = 'No recommendation.';
+                askDiv.appendChild(askText);
+                askDiv.appendChild(makeAskBtn('ask-ai-btn'));
+                emailCell.appendChild(askDiv);
+
+                const mobAsk = document.createElement('div');
+                mobAsk.className = 'mobile-ai-row';
+                mobAsk.setAttribute('data-ai-email', row.email);
+                const mobBtns = document.createElement('div');
+                mobBtns.className = 'mobile-ai-buttons';
+                mobBtns.appendChild(makeAskBtn('ask-ai-btn'));
+                mobAsk.appendChild(mobBtns);
+                actionCell.insertBefore(mobAsk, actionCell.firstChild);
             }
 
             const select = tr.querySelector('select');
@@ -1250,6 +1288,7 @@
                 }
                 filteredData = allData;
                 renderTable();
+                startJevRecommendations();
 
             } else if (data.status === 'failed') {
                 clearInterval(scanPollInterval); scanPollInterval = null;
@@ -1553,16 +1592,33 @@
         return escapeHtml(JSON.stringify(String(str)));
     }
 
-    async function requestAISuggestions() {
-        const btn = document.getElementById('ai-suggest-btn');
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Thinking...';
+    // A row gets "Ask AI" once Jev has finished (or is off) and the row has no recommendation
+    function _needsAskAI(row) {
+        if (jevState === 'idle' || jevState === 'running') return false;
+        return !row.processedAction && !aiSuggestions[row.email]
+            && !aiAppliedRows.has(row.email) && !pendingActions[row.email];
+    }
 
-        // Only send the senders currently visible on screen
-        const _start = (currentPage - 1) * rowsPerPage;
-        const _end = _start + rowsPerPage;
-        const displayedSenders = filteredData.slice(_start, _end).map(row => row.email);
+    async function requestAISuggestions(onlyEmails) {
+        const perRow = Array.isArray(onlyEmails);
+        const btn = document.getElementById('ai-suggest-btn');
+
+        // Top button: every sender Jev didn't recognize. Row button: just that sender.
+        const displayedSenders = perRow
+            ? onlyEmails.filter(e => !aiAsking.has(e))
+            : allData.filter(_needsAskAI).map(row => row.email).filter(e => !aiAsking.has(e));
         const senderCount = displayedSenders.length;
+        if (!senderCount) {
+            if (!perRow) logToScanDebugger('AI: every sender already has a recommendation.', 'info');
+            return;
+        }
+        displayedSenders.forEach(e => aiAsking.add(e));
+        if (perRow) {
+            renderTable();
+        } else {
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Thinking...';
+        }
 
         logToScanDebugger(`AI: sending ${senderCount} senders (background job)...`, 'info');
         const t0 = Date.now();
@@ -1625,24 +1681,116 @@
                 throw new Error(data.error || `Results HTTP ${resultsRes.status}`);
             }
 
+            displayedSenders.forEach(e => aiAsking.delete(e));
             processAISuggestions(data);
-            btn.innerHTML = '<i class="bi bi-stars me-1"></i> AI';
-            btn.disabled = false;
+            const missing = displayedSenders.filter(e => !aiSuggestions[e]).length;
+            if (missing) logToScanDebugger(`AI had no suggestion for ${missing} sender(s).`, 'info');
+            if (!perRow) { btn.innerHTML = AI_BTN_HTML; btn.disabled = false; }
 
         } catch (err) {
+            displayedSenders.forEach(e => aiAsking.delete(e));
             const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
             logToScanDebugger(`AI failed after ${elapsed}s: ${err.message}`, 'error');
-            btn.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i> AI Unavailable';
-            setTimeout(() => {
-                btn.innerHTML = '<i class="bi bi-stars me-1"></i> AI';
-                btn.disabled = false;
-            }, 4000);
+            if (perRow) {
+                renderTable();
+            } else {
+                btn.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i> AI Unavailable';
+                setTimeout(() => { btn.innerHTML = AI_BTN_HTML; btn.disabled = false; }, 4000);
+            }
         }
     }
 
-    function processAISuggestions(data) {
+    // ── Jev: automatic recommendations after each scan ──
+    async function startJevRecommendations() {
+        if (jevPollTimer) { clearTimeout(jevPollTimer); jevPollTimer = null; }
         aiSuggestions = {};
+        jevSeen = new Set();
+        jevJobId = null;
+        jevState = 'running';
+        const btn = document.getElementById('ai-suggest-btn');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Recommending…';
+        const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+        try {
+            const res = await fetch('/api/jev_classify', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': csrfToken, 'Content-Type': 'application/json' },
+                body: '{}'
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+            if (!data.enabled) { _finishJev('off', 'Recommendations are off; use AI for suggestions.'); return; }
+            jevJobId = data.job_id;
+            logToScanDebugger(`Recommendations: checking ${data.total} senders…`, 'info');
+            jevPollTimer = setTimeout(pollJev, 1200);
+        } catch (err) {
+            _finishJev('failed', `Recommendations unavailable: ${err.message}`);
+        }
+    }
+
+    async function pollJev() {
+        const myJob = jevJobId;
+        if (!myJob) return;
+        try {
+            const res = await fetch(`/api/jev_results/${myJob}`);
+            const data = await res.json().catch(() => ({}));
+            if (myJob !== jevJobId) return;  // a newer scan started
+            if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+            const added = _mergeJevDecisions(data.decisions || {});
+            const btn = document.getElementById('ai-suggest-btn');
+            if (data.status === 'running' && data.total) {
+                btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status"></span> ${data.done || 0}/${data.total}`;
+            }
+            if (data.status === 'complete') {
+                _finishJev('complete', `Recommendations ready for ${data.decided ?? Object.keys(aiSuggestions).length} senders in ${data.seconds ?? '?'}s. ${data.unknown ?? 0} need AI.`);
+                return;
+            }
+            if (data.status === 'failed' || data.status === 'off') {
+                _finishJev(data.status, data.status === 'off' ? 'Recommendations are off; use AI for suggestions.' : `Recommendations stopped: ${data.error || 'service error'}`);
+                return;
+            }
+            if (added) { renderTable(); updateAIBulkButtons(); }
+            jevPollTimer = setTimeout(pollJev, 1500);
+        } catch (err) {
+            _finishJev('failed', `Recommendations unavailable: ${err.message}`);
+        }
+    }
+
+    function _mergeJevDecisions(decisions) {
+        let added = 0;
+        for (const [email, d] of Object.entries(decisions)) {
+            if (jevSeen.has(email)) continue;
+            jevSeen.add(email);
+            if (aiSuggestions[email] || aiAppliedRows.has(email)) continue;
+            if (d.action === 'no_label') {
+                aiSuggestions[email] = { action: 'no_label', source: 'jev', confidence: d.confidence };
+                added++;
+            } else if (d.action === 'use_existing' && d.label) {
+                const match = existingLabels.find(l => l.type === 'user' && l.name === d.label);
+                if (!match) continue;  // label vanished: leave the row to "Ask AI"
+                aiSuggestions[email] = { action: 'use_existing', label: match.name, labelId: match.id,
+                                         parent: null, groupName: '', source: 'jev', confidence: d.confidence };
+                added++;
+            }
+        }
+        return added;
+    }
+
+    function _finishJev(state, message) {
+        if (jevPollTimer) { clearTimeout(jevPollTimer); jevPollTimer = null; }
+        jevState = state;
+        const btn = document.getElementById('ai-suggest-btn');
+        btn.innerHTML = AI_BTN_HTML;
+        btn.disabled = false;
+        logToScanDebugger(message, state === 'complete' ? 'success' : (state === 'failed' ? 'error' : 'info'));
+        renderTable();
+        updateAIBulkButtons();
+    }
+
+    function processAISuggestions(data) {
+        // Merge: keeps Jev recommendations and earlier AI answers
         if (!data || !Array.isArray(data.suggestions)) return;
+        let count = 0;
 
         data.suggestions.forEach(group => {
             if (!Array.isArray(group.senders)) return;
@@ -1669,11 +1817,13 @@
                     label:      group.label,
                     labelId:    resolvedLabelId,
                     parent:     group.parent || null,
+                    source:     'llm',
                 };
+                count++;
             });
         });
 
-        logToScanDebugger(`AI suggested labels for ${Object.keys(aiSuggestions).length} senders.`, 'success');
+        logToScanDebugger(`AI suggested labels for ${count} senders.`, 'success');
         renderTable();
         updateAIBulkButtons();
     }
@@ -1818,6 +1968,7 @@
         // Remove both the desktop email-cell hint and the mobile action-cell row
         document.querySelectorAll(`[data-ai-email="${CSS.escape(email)}"]`).forEach(el => el.remove());
         updateAIBulkButtons();
+        renderTable();  // the row now offers "Ask AI"
     }
 
     async function applyAllAI() {
@@ -1838,6 +1989,7 @@
         });
         aiSuggestions = {};
         updateAIBulkButtons();
+        renderTable();
     }
 
     // ── Mobile helpers ──

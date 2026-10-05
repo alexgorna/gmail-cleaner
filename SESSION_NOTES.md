@@ -1035,4 +1035,30 @@ else:
 **Fix in `jev_labeler.py`:** labels are split into chunks of 254 (+ `__none__`), all asked in the same request as `label_0`, `label_1`, ... next to `personal`. With one chunk, behavior is unchanged. With several, each chunk's pick with confidence ≥ `JEV_CANDIDATE_MIN` (0.35) becomes a finalist and a second request chooses among the finalists + `__none__`, so the final confidence is comparable. Worst case 2 Jev calls per sender. Stats now include `label_chunks` and `finalist_rounds`.
 
 **Verified:** mocked 490-label run through the real SDK (2 chunks, every request ≤ 255 options, right labels picked, unknown sender sent to DeepSeek); small label sets still use one round.
+**Commit:** `13725b2`, pushed together with #42.
+
+---
+
+### 42. Jev on page load + "Ask AI" per row (October 5 2026)
+
+**Alex's requested UX:** Jev runs automatically after the scan; rows Jev knows show **Apply recommendation**. Rows Jev doesn't know show an **Ask AI** button (DeepSeek for that one sender). The top **AI** button asks DeepSeek about every sender Jev did not recognize.
+
+**Backend:**
+- `tasks.py`: new Celery task `run_jev_classify(job_id, senders, label_names)`. Writes each decision to Redis hash `jev:{id}:decisions` as it arrives, status in `jev:{id}:status` (running/complete/failed/off, done/total, decided/unknown, seconds, model). Limits: `JEV_MAX_SENDERS` (2000), `JEV_ONLOAD_TIMEOUT` (600 s). TTL 1 h.
+- `tasks.py`: `run_ai_suggestions` now splits big requests into batches of `AI_BATCH_SIZE` (50) so DeepSeek's answer is never truncated; status shows "Batch n/m". One failed batch no longer fails the whole job.
+- `app.py`: `POST /api/jev_classify` (uses the current scan + user labels; returns `{enabled:false}` when Jev is off) and `GET /api/jev_results/<id>` (status + all decisions so far).
+- `app.py`: AI job ownership now tracks a list per session (`ai_job_ids`, last 25; `jev_job_ids`, last 5) so several per-row "Ask AI" clicks can run at once. Previously only the last job id was allowed.
+- `jev_labeler.py`: `jev_available()` (key present and `JEV_ENABLED` != false); `classify_with_jev(..., on_result=, phase_timeout=)` streams results.
+- `AI_PROVIDER` stays `deepseek`. The `hybrid` mode from #40 still exists but is not used by the page.
+
+**Frontend (`dashboard.html`):**
+- After a scan completes, `startJevRecommendations()` starts the Jev job and polls every 1.5 s, merging new decisions into `aiSuggestions` (with `source: 'jev'`) and re-rendering. The AI button shows progress (`12/150`) and is disabled while Jev runs.
+- Jev suggestions say **Apply recommendation**; DeepSeek ones say **Apply AI**. Bulk buttons renamed **Apply all** / **Dismiss all**.
+- Rows with no suggestion (after Jev finishes, not processed, no manual action) show **No recommendation. Ask AI**, which calls `requestAISuggestions([email])`. While waiting the button shows "Asking AI…".
+- `requestAISuggestions()` without arguments now sends every row needing AI (all pages, not just the visible page). `processAISuggestions` merges instead of replacing. Dismissing a suggestion re-renders so the row offers Ask AI.
+- A rescan resets Jev state and suggestions.
+
+**Off switch:** set `JEV_ENABLED=false` on the `gmail-cleaner` and `web` services; the page then shows Ask AI on every row (old behavior with per-row control).
+
+**Verified:** server flow with fakeredis + simulated Gmail + Jev through the real SDK (302 labels → 2 chunks; 3 decided, 117 unknown; two concurrent row asks both allowed; 117 senders → batches 50/50/17; foreign job ids 403; no key → disabled). Headless Chromium on the rendered template with mocked APIs: Jev rows show Apply recommendation / not-recommended warning, unknown rows show Ask AI, per-row Ask AI sends only that sender, top AI sends only the remaining unknown sender, Apply recommendation selects the label, dismiss brings back Ask AI, no page errors.
 **Commit:** pending push

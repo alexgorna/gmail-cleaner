@@ -17,7 +17,8 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from tasks import run_inbox_scan, run_ai_suggestions
+from tasks import run_inbox_scan, run_ai_suggestions, run_jev_classify
+import jev_labeler
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -305,15 +306,26 @@ def suggest_labels():
         print(f"Label fetch for AI failed: {e}")
 
     ai_job_id = str(uuid.uuid4())
-    session['ai_job_id'] = ai_job_id
+    _remember_job('ai_job_ids', ai_job_id)
     run_ai_suggestions.delay(ai_job_id, senders_with_subjects, label_names)
     print(f"[suggest_labels] Queued job {ai_job_id} — {len(senders_with_subjects)} senders, {len(label_names)} labels")
     return jsonify({'job_id': ai_job_id, 'senders_sent': len(senders_with_subjects)})
 
 
+def _remember_job(key, job_id, keep=25):
+    """Track several concurrent jobs per session (e.g. multiple per-row "Ask AI" clicks)."""
+    ids = [j for j in session.get(key, []) if j != job_id]
+    ids.append(job_id)
+    session[key] = ids[-keep:]
+
+
+def _owns_job(key, job_id):
+    return job_id in session.get(key, [])
+
+
 @app.route('/api/ai_status/<job_id>')
 def ai_status(job_id):
-    if session.get('ai_job_id') != job_id:
+    if not _owns_job('ai_job_ids', job_id):
         return jsonify({'error': 'unauthorized'}), 403
     r = get_redis_client()
     raw = r.get(f'ai:{job_id}:status')
@@ -324,13 +336,56 @@ def ai_status(job_id):
 
 @app.route('/api/ai_results/<job_id>')
 def ai_results(job_id):
-    if session.get('ai_job_id') != job_id:
+    if not _owns_job('ai_job_ids', job_id):
         return jsonify({'error': 'unauthorized'}), 403
     r = get_redis_client()
     raw = r.get(f'ai:{job_id}:result')
     if not raw:
         return jsonify({'error': 'Results not found'}), 404
     return jsonify(json.loads(raw))
+
+
+# --- JEV RECOMMENDATIONS (run automatically after each scan) ---
+@app.route('/api/jev_classify', methods=['POST'])
+def jev_classify():
+    if not get_creds():
+        return jsonify({'error': 'Not logged in'}), 401
+    if not jev_labeler.jev_available():
+        return jsonify({'enabled': False})
+    scan_job_id = session.get('scan_job_id')
+    raw = get_redis_client().get(f'scan:{scan_job_id}:results') if scan_job_id else None
+    if not raw:
+        return jsonify({'error': 'No scan results available — run a scan first.'}), 400
+    scan_data = json.loads(raw)
+    senders = [{'email': i['email'], 'subjects': i.get('subjects', [])} for i in scan_data]
+
+    label_names = []
+    try:
+        service = get_service()
+        if service:
+            res = service.users().labels().list(userId='me').execute()
+            label_names = [l['name'] for l in res.get('labels', []) if l.get('type') == 'user']
+    except Exception as e:
+        print(f"Label fetch for Jev failed: {e}")
+
+    job_id = str(uuid.uuid4())
+    _remember_job('jev_job_ids', job_id, keep=5)
+    run_jev_classify.delay(job_id, senders, label_names)
+    print(f"[jev_classify] Queued {job_id} — {len(senders)} senders, {len(label_names)} labels")
+    return jsonify({'enabled': True, 'job_id': job_id, 'total': len(senders)})
+
+
+@app.route('/api/jev_results/<job_id>')
+def jev_results(job_id):
+    if not _owns_job('jev_job_ids', job_id):
+        return jsonify({'error': 'unauthorized'}), 403
+    r = get_redis_client()
+    status_raw = r.get(f'jev:{job_id}:status')
+    status = json.loads(status_raw) if status_raw else {'status': 'pending'}
+    decisions = {k.decode() if isinstance(k, bytes) else k: json.loads(v)
+                 for k, v in r.hgetall(f'jev:{job_id}:decisions').items()}
+    status['decisions'] = decisions
+    return jsonify(status)
 
 
 # --- APPLY ACTIONS ---

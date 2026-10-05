@@ -965,3 +965,43 @@ else:
 
 **Files changed:** `app.py`, `templates/dashboard.html`
 **Commit:** `312b840` — deployed ✓
+
+---
+
+### 38. Fix — Filter creation timeouts + "already exists" error (June 17 2026)
+
+**Problems observed in production logs:**
+1. 4 out of 5 parallel filter creations timed out: `⚠ filter failed: The read operation timed out.` — Gmail's filter API is slow and can't handle 5 concurrent calls.
+2. One filter returned `HttpError 400 "Filter already exists"` — treated as an error when it's actually fine (the filter is already doing its job).
+
+**Fixes in `app.py`:**
+- Added `import threading` and `_filter_lock = threading.Semaphore(1)` next to `PARALLEL_WORKERS` — a module-level lock that serializes filter creation across threads.
+- Wrapped the `settings.filters.create()` call in `with _filter_lock:` — email labeling still runs in parallel, only filter creation is serialized.
+- Increased per-call timeout from 30s → 60s for the filter service.
+- Added specific handling for `'Filter already exists'` in the exception: logs as `+ filter already exists` (green success) instead of `⚠ filter failed`.
+
+**Files changed:** `app.py`
+**Commit:** `1bdc108` — deployed ✓
+
+---
+
+### 39. Security hardening (October 5 2026)
+
+**Audit findings (Railway + repo):**
+1. GitHub personal access token was embedded in the git remote URL (`.git/config`). Not in any tracked file or git history.
+2. `web` service on Railway had no `FLASK_SECRET_KEY` and no `ENVIRONMENT` variable, so production fell back to `'dev_key_for_testing_only'` and set `OAUTHLIB_INSECURE_TRANSPORT=1`.
+3. Stored XSS: when a `From:` header had no `<...>`, the raw header became the "email" and was injected unescaped into `data-email="..."` in the dashboard table. Any sender could craft it.
+4. Label names (including AI-created ones) were rendered unescaped in dashboard dropdowns, and passed into inline `onclick='...'` handlers in both pages. `esc()` alone is not safe there because the browser decodes `&#39;` back to `'` before running the JS.
+5. No cookie hardening (Secure/SameSite) and no security headers. CSV export allowed spreadsheet formula injection.
+
+**Fixes:**
+- `.git/config`: remote set to `https://github.com/alexgorna/gmail-cleaner.git` (token removed). Token must still be revoked on GitHub.
+- `app.py`: `IS_PRODUCTION` (true when `ENVIRONMENT=production` or Railway's `RAILWAY_ENVIRONMENT_NAME=production`). App refuses to start in production without `FLASK_SECRET_KEY`. `OAUTHLIB_INSECURE_TRANSPORT` only outside production. Session cookie `Secure` (prod), `HttpOnly`, `SameSite=Lax`. `after_request` adds `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, HSTS (prod).
+- `tasks.py`: sender parsed with `email.utils.parseaddr` and validated against a safe address regex; anything else becomes `invalid-sender@unknown`.
+- `templates/dashboard.html`: `escapeHtml` now also escapes `'`; new `jsArg()` helper (HTML-escaped JSON string) for inline handlers; escaped emails, label names/ids, source label name; `CSS.escape` in the `data-email` selector; CSV export quotes cells and neutralizes `= + - @` prefixes.
+- `templates/labels.html`: new `jsArg()`; all inline handlers in the tree (`startRename`, `showMoveModal`, `showMergeModal`, `showDeleteModal`, `handleRenameKey`, `toggleExpand`, `cancelManualOp`) use it.
+
+**Verified:** `py_compile` OK, inline JS passes `node --check`, Flask smoke test (prod without secret fails fast; headers + `Secure; HttpOnly; SameSite=Lax` cookie present; dev still works), `jsArg` round-trip with a quote/script payload, sender parser rejects HTML payloads.
+
+**Deploy order (requires approval):** 1) set `FLASK_SECRET_KEY` + `ENVIRONMENT=production` on `web`, 2) push. Pushing first would crash `web` (fail-closed).
+**Commit:** pending approval

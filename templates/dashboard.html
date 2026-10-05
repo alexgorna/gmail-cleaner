@@ -697,7 +697,7 @@
     };
 
     function regenerateLabelOptions() {
-        labelOptionsHTML = existingLabels.filter(l => l.type === 'user').map(l => `<option value="label:${l.id}">${l.name}</option>`).join('');
+        labelOptionsHTML = existingLabels.filter(l => l.type === 'user').map(l => `<option value="label:${escapeHtml(l.id)}">${escapeHtml(l.name)}</option>`).join('');
     }
 
     async function fetchUserInfo() {
@@ -758,7 +758,7 @@
                 <td class="email-text"></td> 
                 <td class="text-center d-none d-sm-table-cell"><span class="count-badge">${row.count}</span></td>
                 <td class="text-end pe-4">
-                    <select class="form-select form-select-sm action-select d-inline-block" style="width: auto; max-width: 200px;" data-email="${row.email}" onchange="handleActionChange(this)">
+                    <select class="form-select form-select-sm action-select d-inline-block" style="width: auto; max-width: 200px;" data-email="${escapeHtml(row.email)}" onchange="handleActionChange(this)">
                         <option value="none">Choose action...</option>
                         <option value="delete" class="text-danger">Delete</option>
                         <optgroup label="Send to Folder">
@@ -766,7 +766,7 @@
                             ${labelOptionsHTML}
                         </optgroup>
                     </select>
-                    ${!currentSourceLabelId ? `<div class="label-options" data-email="${row.email}" style="display:${(pendingActions[row.email] && pendingActions[row.email].action === 'label') ? 'flex' : 'none'}">
+                    ${!currentSourceLabelId ? `<div class="label-options" data-email="${escapeHtml(row.email)}" style="display:${(pendingActions[row.email] && pendingActions[row.email].action === 'label') ? 'flex' : 'none'}">
                         <label class="label-opt-item"><input type="checkbox" onchange="toggleLabelOption(this,'skipInbox')" ${(pendingActions[row.email] && pendingActions[row.email].skipInbox === false) ? '' : 'checked'}> Skip Inbox</label>
                         <label class="label-opt-item"><input type="checkbox" onchange="toggleLabelOption(this,'autoLabel')" ${(pendingActions[row.email] && pendingActions[row.email].autoLabel === false) ? '' : 'checked'}> Auto Label</label>
                     </div>` : ''}
@@ -1016,7 +1016,7 @@
         let html = `<li><a class="dropdown-item fw-bold text-primary" href="#" onclick="openBulkCreateModal()">+ Create New Label</a></li>`;
         html += `<li><hr class="dropdown-divider"></li>`;
         html += existingLabels.filter(l => l.type === 'user').map(l =>
-            `<li><a class="dropdown-item" href="#" onclick="applyBulkRowAction('label:${l.id}')">${l.name}</a></li>`
+            `<li><a class="dropdown-item" href="#" onclick="applyBulkRowAction(${jsArg('label:' + l.id)})">${escapeHtml(l.name)}</a></li>`
         ).join('');
         ul.innerHTML = html;
         // Mobile bottom sheet label select
@@ -1024,7 +1024,7 @@
         if (mobileSelect) {
             let opts = `<option value="">Label selected as…</option><option value="new_label">+ Create New Label</option>`;
             opts += existingLabels.filter(l => l.type === 'user').map(l =>
-                `<option value="label:${l.id}">${l.name}</option>`
+                `<option value="label:${escapeHtml(l.id)}">${escapeHtml(l.name)}</option>`
             ).join('');
             mobileSelect.innerHTML = opts;
         }
@@ -1071,11 +1071,10 @@
 
         suggestionsDiv.innerHTML = matches.slice(0, 10).map(l => {
             const idx = l.name.toLowerCase().indexOf(lowerQuery);
-            const highlighted = l.name.slice(0, idx)
-                + '<span class="match-highlight">' + l.name.slice(idx, idx + query.length) + '</span>'
-                + l.name.slice(idx + query.length);
-            const safeName = l.name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-            return `<div class="suggestion-item" onmousedown="selectLabelSuggestion('${safeName}')"><i class="bi bi-folder me-2 text-muted"></i>${highlighted}</div>`;
+            const highlighted = escapeHtml(l.name.slice(0, idx))
+                + '<span class="match-highlight">' + escapeHtml(l.name.slice(idx, idx + query.length)) + '</span>'
+                + escapeHtml(l.name.slice(idx + query.length));
+            return `<div class="suggestion-item" onmousedown="selectLabelSuggestion(${jsArg(l.name)})"><i class="bi bi-folder me-2 text-muted"></i>${highlighted}</div>`;
         }).join('');
         suggestionsDiv.style.display = 'block';
     }
@@ -1119,10 +1118,16 @@
     }
 
     function downloadCSV() {
-        let csvContent = "data:text/csv;charset=utf-8,Sender Email,Count\n";
-        filteredData.forEach(row => { csvContent += `${row.email},${row.count}\n`; });
+        // Quote cells and neutralize spreadsheet formulas (CSV injection)
+        const csvCell = v => {
+            let s = String(v);
+            if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+            return '"' + s.replace(/"/g, '""') + '"';
+        };
+        let csv = "Sender Email,Count\n";
+        filteredData.forEach(row => { csv += `${csvCell(row.email)},${row.count}\n`; });
         const link = document.createElement("a");
-        link.setAttribute("href", encodeURI(csvContent));
+        link.setAttribute("href", "data:text/csv;charset=utf-8," + encodeURIComponent(csv));
         link.setAttribute("download", "inbox_analysis.csv");
         document.body.appendChild(link);
         link.click();
@@ -1160,7 +1165,7 @@
         const sourcePicker = document.getElementById('source-picker-bar');
         if (sourcePicker) sourcePicker.style.display = 'none';
 
-        const sourceLbl = currentSourceLabelName ? `"${currentSourceLabelName}"` : 'Inbox';
+        const sourceLbl = currentSourceLabelName ? `"${escapeHtml(currentSourceLabelName)}"` : 'Inbox';
         document.getElementById('hero-status-content').innerHTML = `
             <h1 class="hero-title" id="status-text">Scanning ${sourceLbl}…</h1>
             <div id="scan-progress-wrapper">
@@ -1229,7 +1234,7 @@
                 currentInboxCount = totalEmails;
                 sessionOrganizedCount = 0;
                 aiAppliedRows = new Set();
-                const srcLbl = currentSourceLabelName ? `"${currentSourceLabelName}"` : 'your inbox';
+                const srcLbl = currentSourceLabelName ? `"${escapeHtml(currentSourceLabelName)}"` : 'your inbox';
                 document.getElementById('hero-status-content').innerHTML = `
                     <h1 class="hero-title" style="margin-top: 10px;">You have <span class="hero-count" id="inbox-count-display">${totalEmails.toLocaleString()} emails</span> in ${srcLbl}.</h1>
                     <p id="organized-summary" style="display:none; margin-top:10px; font-size:1rem; color:#475569; margin-bottom:0;">You successfully organized <span id="organized-count-display" style="color:#1DB954; font-weight:700;"></span>.</p>
@@ -1424,7 +1429,7 @@
         html += existingLabels
             .filter(l => l.type === 'user')
             .sort((a,b) => a.name.localeCompare(b.name))
-            .map(l => `<li><a class="dropdown-item${currentSourceLabelId === l.id ? ' active' : ''}" href="#" onclick="rescanSource('${l.id}','${l.name.replace(/'/g,"\\'")}')"><i class="bi bi-tag me-2"></i>${l.name}</a></li>`)
+            .map(l => `<li><a class="dropdown-item${currentSourceLabelId === l.id ? ' active' : ''}" href="#" onclick="rescanSource(${jsArg(l.id)},${jsArg(l.name)})"><i class="bi bi-tag me-2"></i>${escapeHtml(l.name)}</a></li>`)
             .join('');
         ul.innerHTML = html;
     }
@@ -1497,7 +1502,7 @@
                                 if (inboxDisplay) inboxDisplay.textContent = currentInboxCount.toLocaleString() + ' emails';
                             }
                             
-                            const select = document.querySelector(`.action-select[data-email="${jsonLog.email}"]`);
+                            const select = document.querySelector(`.action-select[data-email="${CSS.escape(jsonLog.email)}"]`);
                             if (select) {
                                 const tr = select.closest('tr');
                                 tr.classList.add('row-processed');
@@ -1539,7 +1544,13 @@
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    // Safe JS string argument inside an inline HTML event handler attribute
+    function jsArg(str) {
+        return escapeHtml(JSON.stringify(String(str)));
     }
 
     async function requestAISuggestions() {

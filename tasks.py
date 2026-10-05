@@ -7,6 +7,10 @@ import httplib2
 import google_auth_httplib2
 import concurrent.futures
 from collections import Counter
+from email.utils import parseaddr
+
+# Sender addresses come from attacker-controlled From headers: keep only well-formed addresses
+_SAFE_EMAIL_RE = re.compile(r"^[a-z0-9.!#$%&*+/=?^_`{|}~'-]+@[a-z0-9.-]+$")
 
 from celery_app import celery_app
 from google.oauth2.credentials import Credentials
@@ -125,9 +129,10 @@ def run_inbox_scan(job_id, credentials_dict, source_label_id=None, source_label_
                 if exception is None:
                     headers = response['payload']['headers']
                     from_header = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown')
-                    match = re.search(r'<(.+?)>', from_header)
-                    clean_email = match.group(1) if match else from_header
-                    clean_email = clean_email.lower().strip()
+                    _, parsed_addr = parseaddr(from_header)
+                    clean_email = (parsed_addr or '').lower().strip()
+                    if not _SAFE_EMAIL_RE.match(clean_email):
+                        clean_email = 'invalid-sender@unknown'
                     _senders.append(clean_email)
 
                     subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '')

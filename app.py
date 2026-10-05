@@ -21,7 +21,17 @@ from tasks import run_inbox_scan, run_ai_suggestions
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev_key_for_testing_only')
+# --- SECURITY: environment detection + secret key (fail closed in production) ---
+IS_PRODUCTION = (
+    os.environ.get('ENVIRONMENT') == 'production'
+    or os.environ.get('RAILWAY_ENVIRONMENT_NAME') == 'production'
+)
+_secret_key = os.environ.get('FLASK_SECRET_KEY')
+if not _secret_key:
+    if IS_PRODUCTION:
+        raise RuntimeError('FLASK_SECRET_KEY must be set in production')
+    _secret_key = 'dev_key_for_testing_only'
+app.secret_key = _secret_key
 
 # --- CONFIGURATION & CONSTANTS ---
 BATCH_SIZE = 500          # Gmail batchModify supports up to 1000; 500 is safe
@@ -29,12 +39,15 @@ BATCH_SLEEP_SECONDS = 0   # No sleep needed with larger batches
 MAX_RETRIES = 3           # Fail faster; smart backoff handles rate limits
 MAX_MESSAGES_PER_PAGE = 500
 
-if os.environ.get('ENVIRONMENT') != 'production':
+if not IS_PRODUCTION:
     os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
     os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
 
 app.config['SESSION_PERMANENT'] = False
 app.config['SESSION_USE_SIGNER'] = True
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = IS_PRODUCTION
 
 if os.environ.get('REDIS_URL'):
     app.config['SESSION_TYPE'] = 'redis'
@@ -44,6 +57,17 @@ else:
 
 Session(app)
 csrf = CSRFProtect(app)
+
+
+@app.after_request
+def set_security_headers(resp):
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    resp.headers.setdefault('X-Frame-Options', 'DENY')
+    resp.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+    resp.headers.setdefault('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+    if IS_PRODUCTION:
+        resp.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+    return resp
 
 CLIENT_SECRETS_FILE = "client_secret.json"
 SCOPES = [

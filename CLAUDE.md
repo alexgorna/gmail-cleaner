@@ -1,0 +1,1 @@
+This folder contains my Gmail application to organize email addresses into labels, and also there's a new page for label management. Please confirm before deploying anything, and always update the session notes with the latest changes that you made, to not rewrite what was there before. Just add more to the document so we have a history. 

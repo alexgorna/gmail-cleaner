@@ -1074,4 +1074,14 @@ else:
 - `tasks.py` and `ai_labeler.py`: `import jev_labeler` moved to module top level. **Rule for this repo: never import project modules inside Celery task functions.**
 - `dashboard.html`: stall guard. If Jev reports no progress for 90 s, the page stops waiting, logs a message and shows Ask AI on the remaining rows.
 
+**Commit:** `f78767c`, deployed ✓. First real Jev run: 195 senders, 490 labels → 86 decided (44%), 109 unknown, 0 errors, 10.1 s, ~1.09M input tokens (≈ $0.05). Good picks seen (Kohl's → Promos, Southwest → Travels/Southwest) but misses on obvious cases (vgornatti@gmail.com not flagged personal; Atlassian, estatesales, elevault unknown).
+
+---
+
+### 44. Jev diagnostics for threshold tuning (October 5 2026)
+
+Alex chose "measure, then tune" over guessing new thresholds.
+- `jev_labeler.py`: each sender logs one line `[jev-diag] email | personal=… | picks=[(label, conf) per chunk] | final=(label, conf) | -> action`. Controlled by `JEV_DIAG_LOG` (default true; set `false` once tuning is done, since it writes sender addresses to the Railway logs).
+- `dashboard.html`: the info tooltip on a Jev recommendation shows "Recommendation confidence: NN%".
+- Next: read the diag lines from one real scan, pick `JEV_PERSONAL_THRESHOLD` / `JEV_MIN_CONFIDENCE` / `JEV_CANDIDATE_MIN` from the actual score distribution (these are env vars, so tuning needs no code push).
 **Commit:** pending push

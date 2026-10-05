@@ -33,6 +33,7 @@ JEV_MIN_CONFIDENCE     = float(os.environ.get('JEV_MIN_CONFIDENCE', '0.70'))
 JEV_PERSONAL_THRESHOLD = float(os.environ.get('JEV_PERSONAL_THRESHOLD', '0.80'))
 JEV_CONCURRENCY        = int(os.environ.get('JEV_CONCURRENCY', '8'))
 JEV_PHASE_TIMEOUT      = int(os.environ.get('JEV_PHASE_TIMEOUT', '45'))
+JEV_DIAG_LOG           = os.environ.get('JEV_DIAG_LOG', 'true').lower() == 'true'  # per-sender score log for tuning
 
 NONE_OPTION   = '__none__'
 MAX_OPTIONS   = 255          # Jev Choice limit, including NONE_OPTION
@@ -103,7 +104,7 @@ def _label_question(names):
     return {'type': 'choice', 'instructions': _LABEL_INSTRUCTIONS, 'criteria': criteria}
 
 
-def _decide_one(client, state, base_questions, n_chunks, stats):
+def _decide_one(client, state, base_questions, n_chunks, stats, diag=None):
     """
     One sender. Labels beyond Jev's 255-option limit are split into chunks asked in the SAME request
     (one Choice per chunk). When there is more than one chunk, the best pick of each chunk becomes a
@@ -115,13 +116,17 @@ def _decide_one(client, state, base_questions, n_chunks, stats):
     stats['model'] = getattr(resp, 'model', None) or stats['model']
     stats['input_tokens'] += (getattr(getattr(resp, 'usage', None), 'input_tokens', 0) or 0)
 
+    diag = diag if diag is not None else {}
     personal = resp.nouls.get('personal')
+    diag['personal'] = round(personal.noul, 3) if personal is not None else None
+    raw_picks = [resp.choices.get(f'label_{i}') for i in range(n_chunks)]
+    diag['picks'] = [(p.choice, round(p.confidence, 3)) for p in raw_picks if p is not None]
     if personal is not None and personal.noul >= JEV_PERSONAL_THRESHOLD:
         return ('no_label', personal.noul)
     if n_chunks == 0:
         return None
 
-    picks = [resp.choices.get(f'label_{i}') for i in range(n_chunks)]
+    picks = raw_picks
     picks = [p for p in picks if p is not None and p.choice != NONE_OPTION]
     if n_chunks == 1:
         p = picks[0] if picks else None
@@ -135,6 +140,8 @@ def _decide_one(client, state, base_questions, n_chunks, stats):
     stats['finalist_rounds'] += 1
     stats['input_tokens'] += (getattr(getattr(final, 'usage', None), 'input_tokens', 0) or 0)
     p = final.choices.get('label')
+    if p:
+        diag['final'] = (p.choice, round(p.confidence, 3))
     if p and p.choice != NONE_OPTION and p.confidence >= JEV_MIN_CONFIDENCE:
         return ('use_existing', p.choice, p.confidence)
     return None
@@ -163,9 +170,11 @@ def classify_with_jev(client, senders, existing_labels, on_result=None, phase_ti
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=JEV_CONCURRENCY)
     futures = {}
+    diags = {}
     for item in senders:
         email, state = _sender_state(item)
-        futures[pool.submit(_decide_one, client, state, questions, len(chunks), stats)] = (item, email)
+        diags[email] = {}
+        futures[pool.submit(_decide_one, client, state, questions, len(chunks), stats, diags[email])] = (item, email)
 
     done_items = set()
     try:
@@ -188,6 +197,10 @@ def classify_with_jev(client, senders, existing_labels, on_result=None, phase_ti
             else:
                 decisions[email] = {'action': 'use_existing', 'label': outcome[1],
                                     'confidence': round(outcome[2], 3)}
+            if JEV_DIAG_LOG:
+                dg = diags.get(email, {})
+                print(f"[jev-diag] {email} | personal={dg.get('personal')} | picks={dg.get('picks')} "
+                      f"| final={dg.get('final')} | -> {decisions.get(email, {}).get('action', 'unknown')}")
             if on_result:
                 try:
                     on_result(email, decisions.get(email))

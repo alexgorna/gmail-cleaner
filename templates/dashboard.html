@@ -851,9 +851,12 @@
                     hintDiv.appendChild(hintText);
                 } else {
                     const verb = suggestion.action === 'use_existing' ? 'Existing label' : 'Creating label';
-                    const tooltipText = suggestion.action === 'use_existing'
+                    let tooltipText = suggestion.action === 'use_existing'
                         ? `Label "${escapeHtml(suggestion.label)}" already exists in your Gmail — emails will be organised under it.`
                         : `A new label "${escapeHtml(suggestion.label)}" will be created${suggestion.parent ? ` under "${escapeHtml(suggestion.parent)}"` : ''}.`;
+                    if (suggestion.source === 'jev' && typeof suggestion.confidence === 'number') {
+                        tooltipText += ` Recommendation confidence: ${Math.round(suggestion.confidence * 100)}%.`;
+                    }
 
                     hintText.innerHTML = `${verb} <strong>${escapeHtml(suggestion.label)}</strong> recommended.`;
 

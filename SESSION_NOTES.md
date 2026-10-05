@@ -1135,3 +1135,32 @@ Alex approved the redesign.
 
 **Verified:** name matching on real senders (AgentMail ×2, Dunkin' via `dunkinextras@`, Domino's, Southwest, Whatnot, Substack, Synchrony, UDX exact token; EA and generic words not matched). SDK mock: AgentMail offered in the first question and recommended directly; folder tree tests from #45 still pass.
 **Commit:** pending push
+
+**Product direction (Alex, Oct 5):** stop tuning to Alex's inbox; make it work for most users. Plan agreed in principle:
+1. Use each user's own Gmail filters and past labeled emails first (no AI when a match exists).
+2. Describe labels to Jev from real filed emails (sample senders/subjects per label), not from hand-written rules.
+3. Measure accuracy per account automatically: hide labels on already-labeled emails and check Jev's predictions.
+4. Then remove user-specific instructions (recruiting rule, "one sub-label per company", never-pick-parent-folder).
+Score log stays on while tuning (Alex). Launch checks: turn the log off before other users; Google verification / security assessment for the gmail.modify scope.
+**Commit:** `e851167`, deployed ✓. Live run (Oct 5 05:32): 73 existing (was 51), 8 person, 46 new-in-folder, 56 unknown (was 70), 237 calls, 395k tokens, 7.2 s. `singh.adi@withagentmail.com` → Services/AgentMail 0.86 ✓; `adi@agentmail.to` offered AgentMail but Jev chose Newsletters 0.43. Near misses with the right name-matched label under 0.70: Parent Square ×3 (0.47–0.54), Coursera ×2 (0.60/0.68), TelyRx 0.68. Duplicate labels noticed: Emprego/UDX and Jobs/UDX.
+
+---
+
+### 48. Jev: two-way name match, lower bar when name and Jev agree (October 5 2026)
+
+Issues Alex spotted: `noreply@mktg.universalorlando.com` should match **Promos./Universal Orlando Resort** (log: `names=None`, the label name is longer than the address part); `nespresso@mail-de.nespresso.com` (German emails) went to E-Commerce/Nespresso but belongs in the **Germany** folder.
+
+**Fixes (`jev_labeler.py`):**
+- `name_matches()` also matches in reverse: brand-looking domain parts (6+ chars, not in `_GENERIC_DOMAIN_PARTS` like mktg/mail/notifications, not generic words) found inside a longer label name. `universalorlando` → Promos./Universal Orlando Resort; `orlandomagic.com` does not hit Orlando Health.
+- `JEV_NAME_MATCH_MIN` (default **0.50**): when Jev's top pick IS a name-matched label, 0.50 is enough (two independent signals agree). Other picks still need 0.70. Would have caught Parent Square, Coursera, TelyRx.
+- A country-folder rule (for the Nespresso case) was written and then **removed before push**: Alex's direction is that this is a product launching to many users, so no fixes for his specific cases.
+
+**Verified:** matcher on 15 real senders; SDK mocks (#45 tree, #47 names, new lower-bar test: name-matched 0.55 accepted, unmatched 0.55 rejected).
+**Commit:** pending push
+
+**Product direction (Alex, Oct 5):** stop tuning to Alex's inbox; make it work for most users. Plan agreed in principle:
+1. Use each user's own Gmail filters and past labeled emails first (no AI when a match exists).
+2. Describe labels to Jev from real filed emails (sample senders/subjects per label), not from hand-written rules.
+3. Measure accuracy per account automatically: hide labels on already-labeled emails and check Jev's predictions.
+4. Then remove user-specific instructions (recruiting rule, "one sub-label per company", never-pick-parent-folder).
+Score log stays on while tuning (Alex). Launch checks: turn the log off before other users; Google verification / security assessment for the gmail.modify scope.

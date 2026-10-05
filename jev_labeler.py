@@ -134,6 +134,14 @@ _GENERIC_KEYS = {
     'gmail', 'yahoo', 'outlook', 'hotmail', 'icloud', 'google', 'apple', 'microsoft', 'amazon',
 }
 MAX_NAME_MATCHES = 5
+# Sub-domains that say nothing about the brand (mktg.universalorlando.com, e.sixt.com …)
+_GENERIC_DOMAIN_PARTS = {
+    'mail', 'email', 'emails', 'mktg', 'marketing', 'news', 'info', 'notifications', 'notification', 'notify',
+    'alerts', 'updates', 'reply', 'noreply', 'account', 'accounts', 'mailer', 'comms', 'communications',
+    'newsletter', 'promo', 'promos', 'offers', 'service', 'support', 'welcome', 'transactional', 'members',
+}
+# Jev's pick equals a name-matched label: two independent signals agree, so a lower bar is enough
+JEV_NAME_MATCH_MIN = float(os.environ.get('JEV_NAME_MATCH_MIN', '0.50'))
 
 
 def _norm(text):
@@ -157,7 +165,14 @@ def name_matches(email, index):
     """Labels whose leaf name matches the sender: exact address token, or (6+ chars) inside the address."""
     tokens = {_norm(t) for t in re.split(r'[@.\-_+]', email.lower()) if t}
     blob = _norm(email)
-    hits = [(key, full) for key, full in index if key in tokens or (len(key) >= 6 and key in blob)]
+    # Brand-looking parts of the domain (6+ chars), e.g. "universalorlando" from mktg.universalorlando.com
+    domain_parts = [p for p in email.lower().partition('@')[2].split('.')[:-1]]
+    brand_parts = {_norm(p) for p in domain_parts if len(_norm(p)) >= 6 and _norm(p) not in _GENERIC_DOMAIN_PARTS
+                   and _norm(p) not in _GENERIC_KEYS}
+    hits = [(key, full) for key, full in index
+            if key in tokens
+            or (len(key) >= 6 and key in blob)                       # label name inside the address
+            or any(bp in key for bp in brand_parts)]                 # address brand inside a longer label name
     hits.sort(key=lambda kf: -len(kf[0]))   # most specific first
     return [full for _key, full in hits[:MAX_NAME_MATCHES]]
 
@@ -249,8 +264,8 @@ def _decide_one(client, state, top_levels, children, stats, lock, diag, matches=
 
     label_choice, folder_for_new = None, None
     if folder_ans and folder_ans.choice in matches:
-        # Jev chose a name-matched sub-label directly
-        if folder_ans.confidence >= JEV_MIN_CONFIDENCE:
+        # Jev chose a name-matched sub-label directly (lower bar: name and Jev agree)
+        if folder_ans.confidence >= JEV_NAME_MATCH_MIN:
             label_choice = (folder_ans.choice, folder_ans.confidence)
     elif folder_ans and folder_ans.choice != NONE_OPTION:
         folder = folder_ans.choice

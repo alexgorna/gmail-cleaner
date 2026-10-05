@@ -36,6 +36,8 @@ JEV_PHASE_TIMEOUT      = int(os.environ.get('JEV_PHASE_TIMEOUT', '45'))
 
 NONE_OPTION   = '__none__'
 MAX_OPTIONS   = 255          # Jev Choice limit, including NONE_OPTION
+CHUNK_SIZE    = MAX_OPTIONS - 1
+CANDIDATE_MIN = float(os.environ.get('JEV_CANDIDATE_MIN', '0.35'))  # stage-1 bar to become a finalist
 MAX_SUBJECTS  = 3
 MAX_SUBJ_LEN  = 200
 
@@ -91,6 +93,49 @@ def _ask_jev(client, state, questions):
     return client.system_one(state=state, questions=questions)
 
 
+def _label_question(names):
+    criteria = {name: None for name in names}
+    criteria[NONE_OPTION] = 'None of these labels fits this sender well.'
+    return {'type': 'choice', 'instructions': _LABEL_INSTRUCTIONS, 'criteria': criteria}
+
+
+def _decide_one(client, state, base_questions, n_chunks, stats):
+    """
+    One sender. Labels beyond Jev's 255-option limit are split into chunks asked in the SAME request
+    (one Choice per chunk). When there is more than one chunk, the best pick of each chunk becomes a
+    finalist and a second request chooses among the finalists, so confidences are comparable.
+    Returns ('no_label', p) | ('use_existing', label, conf) | None.
+    """
+    resp = _ask_jev(client, state, base_questions)
+    stats['jev_calls'] += 1
+    stats['model'] = getattr(resp, 'model', None) or stats['model']
+    stats['input_tokens'] += (getattr(getattr(resp, 'usage', None), 'input_tokens', 0) or 0)
+
+    personal = resp.nouls.get('personal')
+    if personal is not None and personal.noul >= JEV_PERSONAL_THRESHOLD:
+        return ('no_label', personal.noul)
+    if n_chunks == 0:
+        return None
+
+    picks = [resp.choices.get(f'label_{i}') for i in range(n_chunks)]
+    picks = [p for p in picks if p is not None and p.choice != NONE_OPTION]
+    if n_chunks == 1:
+        p = picks[0] if picks else None
+        return ('use_existing', p.choice, p.confidence) if p and p.confidence >= JEV_MIN_CONFIDENCE else None
+
+    finalists = [p.choice for p in picks if p.confidence >= CANDIDATE_MIN]
+    if not finalists:
+        return None
+    final = _ask_jev(client, state, {'label': _label_question(finalists)})
+    stats['jev_calls'] += 1
+    stats['finalist_rounds'] += 1
+    stats['input_tokens'] += (getattr(getattr(final, 'usage', None), 'input_tokens', 0) or 0)
+    p = final.choices.get('label')
+    if p and p.choice != NONE_OPTION and p.confidence >= JEV_MIN_CONFIDENCE:
+        return ('use_existing', p.choice, p.confidence)
+    return None
+
+
 def classify_with_jev(client, senders, existing_labels):
     """
     Returns (decisions, unresolved, stats).
@@ -98,53 +143,45 @@ def classify_with_jev(client, senders, existing_labels):
       unresolved: list of the original sender items Jev could not decide confidently
     """
     labels = _label_names(existing_labels)
-    use_choice = 0 < len(labels) <= MAX_OPTIONS - 1
+    chunks = [labels[i:i + CHUNK_SIZE] for i in range(0, len(labels), CHUNK_SIZE)]
     questions = {'personal': _PERSONAL_Q}
-    if use_choice:
-        criteria = {name: None for name in labels}
-        criteria[NONE_OPTION] = 'None of these labels fits this sender well.'
-        questions['label'] = {'type': 'choice', 'instructions': _LABEL_INSTRUCTIONS, 'criteria': criteria}
-    elif labels:
-        print(f'[jev] {len(labels)} labels exceeds Choice limit; label matching left to the LLM')
+    for i, chunk in enumerate(chunks):
+        questions[f'label_{i}'] = _label_question(chunk)
+    if len(chunks) > 1:
+        print(f'[jev] {len(labels)} labels -> {len(chunks)} chunks + finalist round')
 
     decisions, unresolved = {}, []
-    stats = {'jev_calls': 0, 'jev_errors': 0, 'jev_timeouts': 0, 'input_tokens': 0, 'model': None}
+    stats = {'senders_answered': 0, 'jev_calls': 0, 'jev_errors': 0, 'jev_timeouts': 0,
+             'finalist_rounds': 0, 'input_tokens': 0, 'model': None, 'label_chunks': len(chunks)}
     started = time.monotonic()
 
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=JEV_CONCURRENCY)
     futures = {}
     for item in senders:
         email, state = _sender_state(item)
-        futures[pool.submit(_ask_jev, client, state, questions)] = (item, email)
+        futures[pool.submit(_decide_one, client, state, questions, len(chunks), stats)] = (item, email)
 
     done_items = set()
     try:
         for fut in concurrent.futures.as_completed(futures, timeout=JEV_PHASE_TIMEOUT):
             item, email = futures[fut]
             done_items.add(fut)
-            stats['jev_calls'] += 1
+            stats['senders_answered'] += 1
             try:
-                resp = fut.result()
+                outcome = fut.result()
             except Exception as e:  # auth, rate limit after retries, network
                 stats['jev_errors'] += 1
                 if stats['jev_errors'] <= 3:
                     print(f'[jev] call failed for one sender: {type(e).__name__}: {e}')
                 unresolved.append(item)
                 continue
-            stats['model'] = getattr(resp, 'model', None) or stats['model']
-            usage = getattr(resp, 'usage', None)
-            stats['input_tokens'] += (getattr(usage, 'input_tokens', 0) or 0)
-
-            personal = resp.nouls.get('personal')
-            if personal is not None and personal.noul >= JEV_PERSONAL_THRESHOLD:
-                decisions[email] = {'action': 'no_label', 'confidence': round(personal.noul, 3)}
-                continue
-            pick = resp.choices.get('label') if use_choice else None
-            if pick is not None and pick.choice != NONE_OPTION and pick.confidence >= JEV_MIN_CONFIDENCE:
-                decisions[email] = {'action': 'use_existing', 'label': pick.choice,
-                                    'confidence': round(pick.confidence, 3)}
-                continue
-            unresolved.append(item)
+            if outcome is None:
+                unresolved.append(item)
+            elif outcome[0] == 'no_label':
+                decisions[email] = {'action': 'no_label', 'confidence': round(outcome[1], 3)}
+            else:
+                decisions[email] = {'action': 'use_existing', 'label': outcome[1],
+                                    'confidence': round(outcome[2], 3)}
     except concurrent.futures.TimeoutError:
         for fut, (item, _email) in futures.items():
             if fut not in done_items:
@@ -197,7 +234,7 @@ def suggest_labels_hybrid(senders, existing_labels, llm_fn):
             pass
 
     # Every call failed (bad key, outage): behave exactly like the old path
-    if stats['jev_calls'] and stats['jev_errors'] == stats['jev_calls']:
+    if stats['senders_answered'] and stats['jev_errors'] == stats['senders_answered']:
         print('[jev] all calls failed; falling back to LLM for everything')
         result = llm_fn(senders, existing_labels)
         result['meta'] = {'provider': 'llm_only', 'reason': 'jev_errors', **stats}

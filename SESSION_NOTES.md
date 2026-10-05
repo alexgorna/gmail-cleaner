@@ -1024,4 +1024,15 @@ else:
 **Verified (container, real SDK with a mocked HTTP transport):** happy path (3 of 4 senders by Jev, 1 to DeepSeek, every sender covered once), no-key fallback, bad-key fallback over the network, phase-timeout fallback, `AI_PROVIDER` routing, group-name extraction (`mail.ibm.com` → Ibm, `bbc.co.uk` → Bbc).
 
 **To turn on:** set `AI_PROVIDER=hybrid` on the `gmail-cleaner` worker in Railway. `TYPESAFE_API_KEY` is already set there.
+**Commit:** `d4a60a3`, deployed ✓ (default still DeepSeek). First prod run after deploy: 50 senders, 490 labels, DeepSeek 10 s, 5.3k in / 2.3k out tokens.
+
+---
+
+### 41. Jev: support more than 255 labels (October 5 2026)
+
+**Problem:** production logs showed the account has 490 labels. Jev's Choice accepts at most 255 options, so the first version skipped label matching entirely above that.
+
+**Fix in `jev_labeler.py`:** labels are split into chunks of 254 (+ `__none__`), all asked in the same request as `label_0`, `label_1`, ... next to `personal`. With one chunk, behavior is unchanged. With several, each chunk's pick with confidence ≥ `JEV_CANDIDATE_MIN` (0.35) becomes a finalist and a second request chooses among the finalists + `__none__`, so the final confidence is comparable. Worst case 2 Jev calls per sender. Stats now include `label_chunks` and `finalist_rounds`.
+
+**Verified:** mocked 490-label run through the real SDK (2 chunks, every request ≤ 255 options, right labels picked, unknown sender sent to DeepSeek); small label sets still use one round.
 **Commit:** pending push

@@ -688,6 +688,8 @@
     let jevJobId = null;
     let jevPollTimer = null;
     let jevSeen = new Set();        // emails already merged from Jev (so a dismissed one isn't re-added)
+    let jevLastProgress = { done: -1, at: 0 };  // stall detection
+    const JEV_STALL_MS = 90000;
     let aiAsking = new Set();       // emails with an in-flight per-row "Ask AI" request
     const AI_BTN_HTML = '<i class="bi bi-stars me-1"></i> AI';
 
@@ -1721,6 +1723,7 @@
             if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
             if (!data.enabled) { _finishJev('off', 'Recommendations are off; use AI for suggestions.'); return; }
             jevJobId = data.job_id;
+            jevLastProgress = { done: -1, at: Date.now() };
             logToScanDebugger(`Recommendations: checking ${data.total} senders…`, 'info');
             jevPollTimer = setTimeout(pollJev, 1200);
         } catch (err) {
@@ -1750,6 +1753,13 @@
                 return;
             }
             if (added) { renderTable(); updateAIBulkButtons(); }
+            const doneNow = (data.done || 0) + Object.keys(data.decisions || {}).length;
+            if (doneNow !== jevLastProgress.done) {
+                jevLastProgress = { done: doneNow, at: Date.now() };
+            } else if (Date.now() - jevLastProgress.at > JEV_STALL_MS) {
+                _finishJev('failed', 'Recommendations stopped responding; use Ask AI for the rest.');
+                return;
+            }
             jevPollTimer = setTimeout(pollJev, 1500);
         } catch (err) {
             _finishJev('failed', `Recommendations unavailable: ${err.message}`);

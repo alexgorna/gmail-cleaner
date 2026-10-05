@@ -17,6 +17,7 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 import ai_labeler
+import jev_labeler  # must be imported at load time: Celery drops the app dir from sys.path afterwards
 
 # --- CONSTANTS (mirror app.py values) ---
 BATCH_SIZE = 18
@@ -293,7 +294,6 @@ def run_jev_classify(job_id, senders, label_names):
     arrives (hash jev:{job_id}:decisions) so the page can show recommendations progressively.
     Senders Jev can't place get no entry; the page offers "Ask AI" (DeepSeek) for those.
     """
-    import jev_labeler
     r = get_redis_client()
     status_key, dec_key = f'jev:{job_id}:status', f'jev:{job_id}:decisions'
     senders = senders[:JEV_MAX_SENDERS]

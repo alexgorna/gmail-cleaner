@@ -16,6 +16,7 @@ import os
 import re
 import json
 import requests as _http
+import jev_labeler
 
 # ── Feature flag ───────────────────────────────────────────────────────────────
 AI_LABELING_ENABLED = os.environ.get('AI_LABELING_ENABLED', 'true').lower() == 'true'
@@ -108,7 +109,6 @@ def suggest_labels(senders: list, existing_labels: list) -> dict:
         raise RuntimeError('AI labeling is disabled (AI_LABELING_ENABLED=false)')
 
     if AI_PROVIDER == 'hybrid':
-        import jev_labeler
         return jev_labeler.suggest_labels_hybrid(
             senders[:AI_MAX_SENDERS], existing_labels,
             llm_fn=lambda s, l: _suggest_with_llm(s, l, HYBRID_LLM_PROVIDER),

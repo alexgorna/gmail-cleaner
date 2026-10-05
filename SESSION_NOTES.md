@@ -1061,4 +1061,17 @@ else:
 **Off switch:** set `JEV_ENABLED=false` on the `gmail-cleaner` and `web` services; the page then shows Ask AI on every row (old behavior with per-row control).
 
 **Verified:** server flow with fakeredis + simulated Gmail + Jev through the real SDK (302 labels → 2 chunks; 3 decided, 117 unknown; two concurrent row asks both allowed; 117 senders → batches 50/50/17; foreign job ids 403; no key → disabled). Headless Chromium on the rendered template with mocked APIs: Jev rows show Apply recommendation / not-recommended warning, unknown rows show Ask AI, per-row Ask AI sends only that sender, top AI sends only the remaining unknown sender, Apply recommendation selects the label, dismiss brings back Ask AI, no page errors.
+**Commit:** `3b0dbfb`, deployed ✓.
+**Post-deploy fix (Railway only):** the first live scan showed "No recommendation" on every row because `/api/jev_classify` runs on `web`, and `jev_available()` checks `TYPESAFE_API_KEY`, which only existed on the worker. Added `TYPESAFE_API_KEY=${{gmail-cleaner.TYPESAFE_API_KEY}}` (Railway reference, value never copied) on `web`; redeployed OK.
+
+---
+
+### 43. Fix — Jev stuck on "Recommending…" (October 5 2026)
+
+**Problem (worker log):** `run_jev_classify` raised `ModuleNotFoundError: No module named 'jev_labeler'`. `celery -A tasks` puts the app folder on `sys.path` only while loading `tasks.py` and removes it afterwards, so a module imported lazily inside a task can't be found (gunicorn on `web` was fine). The import ran before the task's `try`, so the status stayed `running` and the page polled forever.
+
+**Fixes:**
+- `tasks.py` and `ai_labeler.py`: `import jev_labeler` moved to module top level. **Rule for this repo: never import project modules inside Celery task functions.**
+- `dashboard.html`: stall guard. If Jev reports no progress for 90 s, the page stops waiting, logs a message and shows Ask AI on the remaining rows.
+
 **Commit:** pending push

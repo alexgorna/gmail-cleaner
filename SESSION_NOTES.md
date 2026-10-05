@@ -1117,4 +1117,21 @@ Alex approved the redesign.
 **Not yet verified against live Jev** (instructions-only change; check the `[jev-diag]` lines for these two senders after the next scan).
 
 **Backlog (bigger fix):** let Jev learn what each label means from emails Alex already filed there (a few sender examples per label, cached per user), instead of guessing from label names. Would also make Portuguese folder names like "Emprego" unambiguous.
+**Commit:** `872d7c0`, deployed ✓. Live run (Oct 5 05:20): `adobe@myworkday.com` → folder Emprego 0.98 (new_in_folder), `e.ogull@tenthrevolution.com` → Emprego 0.96 (Job Opp only 0.46, so it fell to person 0.77). Totals: 51 existing, 7 person, 55 new-in-folder, 70 unknown (was 86), 422k tokens, 8.7 s. Alex: "recommendations were better this last time."
+
+**Known gap, left as is by Alex's choice:** inside Emprego, recruiters score Job Opp at 0.46–0.67 and get "new label" instead, because the instructions say folders hold one sub-label per company. Possible fix (backlog `jev-10`): mention catch-all sub-labels and prefer them.
+
+---
+
+### 47. Jev: brand name match offers hidden sub-labels (October 5 2026)
+
+**Problem Alex spotted:** `adi@agentmail.to` got "Belongs under Newsletters" although **Services/AgentMail** exists. The folder step describes each folder with only 6 example sub-labels, so Jev never saw AgentMail under Services (log: folder Newsletters 0.85, sub `__new__` 0.96). `singh.adi@withagentmail.com` got no folder at all.
+
+**Fix (`jev_labeler.py`):**
+- `build_name_index()`: key = leaf sub-label name normalized to `[a-z0-9]` (e.g. `agentmail`, `dunkin`, `dominos`), skipping folders, top-level labels (already offered), keys under 3 chars and generic words (`_GENERIC_KEYS`: support, promos, travel, gmail, amazon…).
+- `name_matches(email)`: a key matches if it equals a token of the address (split on `@ . - _ +`) or, for keys of 6+ chars, appears anywhere in the address (`withagentmail.com` → AgentMail). Up to 5, longest first.
+- Matches are added as extra options in Jev's first (folder) question, described as "existing sub-label whose name matches this sender". If Jev picks one with confidence ≥ 0.70 → `use_existing` directly. Jev still decides, so a false match (e.g. `targetedmarketing.com` → Promos./Target) is only an option, not a recommendation.
+- Diag log shows `names=[...]`.
+
+**Verified:** name matching on real senders (AgentMail ×2, Dunkin' via `dunkinextras@`, Domino's, Southwest, Whatnot, Substack, Synchrony, UDX exact token; EA and generic words not matched). SDK mock: AgentMail offered in the first question and recommended directly; folder tree tests from #45 still pass.
 **Commit:** pending push

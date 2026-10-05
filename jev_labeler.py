@@ -123,7 +123,46 @@ def build_label_tree(labels):
     return top_levels, children
 
 
-def _folder_question(top_levels, children):
+# ── Brand name match: offer existing labels whose name appears in the sender address ──
+# (the folder step only shows a few example sub-labels per folder, so e.g. Services/AgentMail was invisible)
+_GENERIC_KEYS = {
+    'mail', 'email', 'emails', 'news', 'newsletter', 'newsletters', 'info', 'support', 'help', 'service',
+    'services', 'promo', 'promos', 'offers', 'deals', 'sales', 'jobs', 'job', 'career', 'careers', 'other',
+    'misc', 'personal', 'work', 'home', 'travel', 'travels', 'bank', 'banks', 'health', 'school', 'shop',
+    'shopping', 'store', 'account', 'accounts', 'billing', 'notifications', 'noreply', 'reply', 'team',
+    'hello', 'contact', 'updates', 'alerts', 'family', 'friends', 'finance', 'bills', 'receipts', 'orders',
+    'gmail', 'yahoo', 'outlook', 'hotmail', 'icloud', 'google', 'apple', 'microsoft', 'amazon',
+}
+MAX_NAME_MATCHES = 5
+
+
+def _norm(text):
+    return re.sub(r'[^a-z0-9]', '', text.lower())
+
+
+def build_name_index(labels, children):
+    """[(key, full_label)] for every leaf sub-label (labels with no children of their own)."""
+    has_kids = {n.rsplit('/', 1)[0] for n in labels if '/' in n}
+    index = []
+    for name in labels:
+        if '/' not in name or name in has_kids:
+            continue            # top-level labels are already offered; folders are never destinations
+        key = _norm(name.rsplit('/', 1)[1])
+        if len(key) >= 3 and key not in _GENERIC_KEYS:
+            index.append((key, name))
+    return index
+
+
+def name_matches(email, index):
+    """Labels whose leaf name matches the sender: exact address token, or (6+ chars) inside the address."""
+    tokens = {_norm(t) for t in re.split(r'[@.\-_+]', email.lower()) if t}
+    blob = _norm(email)
+    hits = [(key, full) for key, full in index if key in tokens or (len(key) >= 6 and key in blob)]
+    hits.sort(key=lambda kf: -len(kf[0]))   # most specific first
+    return [full for _key, full in hits[:MAX_NAME_MATCHES]]
+
+
+def _folder_question(top_levels, children, matches=()):
     criteria = {}
     for top in top_levels:
         kids = children[top]
@@ -132,6 +171,9 @@ def _folder_question(top_levels, children):
             criteria[top] = f'Folder with {len(kids)} sub-labels, for example: {examples}'
         else:
             criteria[top] = None
+    for full in matches:
+        if full not in criteria:
+            criteria[full] = 'Existing sub-label whose name matches this sender (pick it if the email is about the user\'s dealings with them).'
     criteria[NONE_OPTION] = 'None of these top-level labels fits this sender.'
     return {'type': 'choice', 'instructions': _FOLDER_INSTRUCTIONS, 'criteria': criteria}
 
@@ -187,14 +229,16 @@ def _pick_in_folder(client, state, folder, kids, stats, lock, diag):
     return NEW_OPTION, best_new
 
 
-def _decide_one(client, state, top_levels, children, stats, lock, diag):
+def _decide_one(client, state, top_levels, children, stats, lock, diag, matches=()):
     """
     Returns one of:
       ('use_existing', label, conf) | ('no_label', p) | ('new_in_folder', folder, conf) | None
     """
     qs = {'personal': _PERSONAL_Q}
     if top_levels:
-        qs['folder'] = _folder_question(top_levels, children)
+        qs['folder'] = _folder_question(top_levels, children, matches)
+    if matches:
+        diag['name_matches'] = list(matches)
     resp = _ask_jev(client, state, qs, stats, lock)
 
     personal = resp.nouls.get('personal')
@@ -204,7 +248,11 @@ def _decide_one(client, state, top_levels, children, stats, lock, diag):
     diag['folder'] = (folder_ans.choice, round(folder_ans.confidence, 3)) if folder_ans else None
 
     label_choice, folder_for_new = None, None
-    if folder_ans and folder_ans.choice != NONE_OPTION:
+    if folder_ans and folder_ans.choice in matches:
+        # Jev chose a name-matched sub-label directly
+        if folder_ans.confidence >= JEV_MIN_CONFIDENCE:
+            label_choice = (folder_ans.choice, folder_ans.confidence)
+    elif folder_ans and folder_ans.choice != NONE_OPTION:
         folder = folder_ans.choice
         kids = children.get(folder, [])
         if not kids:
@@ -242,6 +290,7 @@ def classify_with_jev(client, senders, existing_labels, on_result=None, phase_ti
         print(f'[jev] {len(top_levels)} top-level labels; only the first {CHUNK_SIZE} are offered')
         top_levels = top_levels[:CHUNK_SIZE]
     folders = sum(1 for t in top_levels if children[t])
+    name_index = build_name_index(labels, children)
     print(f'[jev] {len(labels)} labels -> {len(top_levels)} top-level ({folders} folders)')
 
     decisions, unresolved = {}, []
@@ -255,7 +304,8 @@ def classify_with_jev(client, senders, existing_labels, on_result=None, phase_ti
     for item in senders:
         email, state = _sender_state(item)
         diags[email] = {}
-        futures[pool.submit(_decide_one, client, state, top_levels, children, stats, lock, diags[email])] = (item, email)
+        futures[pool.submit(_decide_one, client, state, top_levels, children, stats, lock, diags[email],
+                            name_matches(email, name_index))] = (item, email)
 
     done_items = set()
     try:
@@ -281,7 +331,7 @@ def classify_with_jev(client, senders, existing_labels, on_result=None, phase_ti
                 unresolved.append(item)   # still needs a name from the LLM
             if JEV_DIAG_LOG:
                 dg = diags.get(email, {})
-                print(f"[jev-diag] {email} | personal={dg.get('personal')} | folder={dg.get('folder')} "
+                print(f"[jev-diag] {email} | personal={dg.get('personal')} | names={dg.get('name_matches')} | folder={dg.get('folder')} "
                       f"| sub={dg.get('sub_picks')} | final={dg.get('sub_final')} "
                       f"| -> {decisions.get(email, {}).get('action', 'unknown')} {decisions.get(email, {}).get('label') or decisions.get(email, {}).get('parent') or ''}")
             if on_result:

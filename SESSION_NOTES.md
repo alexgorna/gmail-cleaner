@@ -1134,14 +1134,6 @@ Alex approved the redesign.
 - Diag log shows `names=[...]`.
 
 **Verified:** name matching on real senders (AgentMail ×2, Dunkin' via `dunkinextras@`, Domino's, Southwest, Whatnot, Substack, Synchrony, UDX exact token; EA and generic words not matched). SDK mock: AgentMail offered in the first question and recommended directly; folder tree tests from #45 still pass.
-**Commit:** pending push
-
-**Product direction (Alex, Oct 5):** stop tuning to Alex's inbox; make it work for most users. Plan agreed in principle:
-1. Use each user's own Gmail filters and past labeled emails first (no AI when a match exists).
-2. Describe labels to Jev from real filed emails (sample senders/subjects per label), not from hand-written rules.
-3. Measure accuracy per account automatically: hide labels on already-labeled emails and check Jev's predictions.
-4. Then remove user-specific instructions (recruiting rule, "one sub-label per company", never-pick-parent-folder).
-Score log stays on while tuning (Alex). Launch checks: turn the log off before other users; Google verification / security assessment for the gmail.modify scope.
 **Commit:** `e851167`, deployed ✓. Live run (Oct 5 05:32): 73 existing (was 51), 8 person, 46 new-in-folder, 56 unknown (was 70), 237 calls, 395k tokens, 7.2 s. `singh.adi@withagentmail.com` → Services/AgentMail 0.86 ✓; `adi@agentmail.to` offered AgentMail but Jev chose Newsletters 0.43. Near misses with the right name-matched label under 0.70: Parent Square ×3 (0.47–0.54), Coursera ×2 (0.60/0.68), TelyRx 0.68. Duplicate labels noticed: Emprego/UDX and Jobs/UDX.
 
 ---
@@ -1156,7 +1148,7 @@ Issues Alex spotted: `noreply@mktg.universalorlando.com` should match **Promos./
 - A country-folder rule (for the Nespresso case) was written and then **removed before push**: Alex's direction is that this is a product launching to many users, so no fixes for his specific cases.
 
 **Verified:** matcher on 15 real senders; SDK mocks (#45 tree, #47 names, new lower-bar test: name-matched 0.55 accepted, unmatched 0.55 rejected).
-**Commit:** pending push
+**Commit:** `6f9455b`, deployed ✓. Live run (Oct 5 05:41): 77 existing (was 73), 7 person, 44 new-in-folder, 55 unknown, 234 calls, 393k tokens, 7.6 s. Universal Orlando ×2 → Promos./Universal Orlando Resort (0.97/0.96), Coursera ×2 (0.55/0.68), TelyRx (0.68), Parent Square 1 of 3 (others 0.48, and folder-only 0.50). Still missed: adi@agentmail.to (Jev prefers Newsletters 0.46). These are the cases the history/filters step should cover.
 
 **Product direction (Alex, Oct 5):** stop tuning to Alex's inbox; make it work for most users. Plan agreed in principle:
 1. Use each user's own Gmail filters and past labeled emails first (no AI when a match exists).
@@ -1164,3 +1156,22 @@ Issues Alex spotted: `noreply@mktg.universalorlando.com` should match **Promos./
 3. Measure accuracy per account automatically: hide labels on already-labeled emails and check Jev's predictions.
 4. Then remove user-specific instructions (recruiting rule, "one sub-label per company", never-pick-parent-folder).
 Score log stays on while tuning (Alex). Launch checks: turn the log off before other users; Google verification / security assessment for the gmail.modify scope.
+
+---
+
+### 49. Recommend from the user's own Gmail filters and history first (October 5 2026)
+
+Product step 1 from #48 (works for any user, any language or folder style; no AI).
+
+**New `history_labeler.py`** (imported at top of `tasks.py` and `app.py`):
+- **Filters:** `settings.filters.list`; keeps filters whose only criterion is `from` and that add exactly one user label. Parses `a@x.com OR b@y.com`, `(x.com | y.com)`, `{a b}`. Match: exact address, domain or sub-domain, or a bare word (4+ chars) inside the address. Result `source: 'filter'`, confidence 1.0. (Filters created by our own Apply Actions count too, so a sender handled once is recognized next time.)
+- **History:** per sender `messages.list(q='from:(<address>) has:userlabels', maxResults=HISTORY_SAMPLE=5)`, then `messages.get(format='minimal')` for the label ids, all through Gmail batch HTTP (`HISTORY_BATCH=40` per request). The most common user label wins if it covers ≥ `HISTORY_MIN_SHARE` (0.6) of the sample. Result `source: 'history'`, `evidence: 'N of M'`. Ties/mixed history are left for Jev.
+- Diag lines `[history-diag]` (same `JEV_DIAG_LOG` switch). Off switch: `HISTORY_ENABLED=false`.
+
+**Wiring:**
+- `tasks.run_jev_classify(job_id, senders, labels, credentials_dict=None)`: builds a Gmail client from the user's credentials, runs history first (streaming decisions to Redis), then Jev only on the senders left. Works even when Jev is off. Status includes `from_history`. Log line `[history] N by filter, N by history, N left for Jev, …`.
+- `app.py /api/jev_classify`: passes `session['credentials']` to the task (same pattern as the scan; see backlog sec-08 about tokens in task args). Enabled when Jev or history is enabled.
+- `dashboard.html`: recommendations keep `basis` (`filter` / `history` / `jev`) and `evidence`; the ⓘ tooltip says "Based on your existing Gmail filter for this sender." or "You filed 3 of 3 recent emails from this sender here."
+
+**Verified (simulated Gmail):** filter with OR list and domain filter matched; filter with a subject criterion ignored; history 3/3 → Services/AgentMail, 1/1 → Parent Square; 2/2 split → left for Jev; end to end through the Celery task with fakeredis: 4 decided from history/filters, Jev only received the 3 remaining senders.
+**Commit:** pending push

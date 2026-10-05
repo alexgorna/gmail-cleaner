@@ -858,7 +858,11 @@
                     let tooltipText = suggestion.action === 'use_existing'
                         ? `Label "${escapeHtml(suggestion.label)}" already exists in your Gmail — emails will be organised under it.`
                         : `A new label "${escapeHtml(suggestion.label)}" will be created${suggestion.parent ? ` under "${escapeHtml(suggestion.parent)}"` : ''}.`;
-                    if (suggestion.source === 'jev' && typeof suggestion.confidence === 'number') {
+                    if (suggestion.basis === 'filter') {
+                        tooltipText += ' Based on your existing Gmail filter for this sender.';
+                    } else if (suggestion.basis === 'history') {
+                        tooltipText += ` You filed ${escapeHtml(suggestion.evidence || 'earlier')} recent emails from this sender here.`;
+                    } else if (suggestion.source === 'jev' && typeof suggestion.confidence === 'number') {
                         tooltipText += ` Recommendation confidence: ${Math.round(suggestion.confidence * 100)}%.`;
                     }
 
@@ -1814,7 +1818,8 @@
                 const match = existingLabels.find(l => l.type === 'user' && l.name === d.label);
                 if (!match) continue;  // label vanished: leave the row to "Ask AI"
                 aiSuggestions[email] = { action: 'use_existing', label: match.name, labelId: match.id,
-                                         parent: null, groupName: '', source: 'jev', confidence: d.confidence };
+                                         parent: null, groupName: '', source: 'jev', confidence: d.confidence,
+                                         basis: d.source || 'jev', evidence: d.evidence || '' };
                 added++;
             }
         }

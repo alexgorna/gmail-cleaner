@@ -18,6 +18,7 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 import ai_labeler
 import jev_labeler  # must be imported at load time: Celery drops the app dir from sys.path afterwards
+import history_labeler
 
 # --- CONSTANTS (mirror app.py values) ---
 BATCH_SIZE = 18
@@ -288,11 +289,13 @@ JEV_ONLOAD_TIMEOUT = int(os.environ.get('JEV_ONLOAD_TIMEOUT', '600'))
 
 
 @celery_app.task
-def run_jev_classify(job_id, senders, label_names):
+def run_jev_classify(job_id, senders, label_names, credentials_dict=None):
     """
-    Classify every scanned sender with Jev right after the scan. Each answer is written to Redis as it
-    arrives (hash jev:{job_id}:decisions) so the page can show recommendations progressively.
-    Senders Jev can't place get no entry; the page offers "Ask AI" (DeepSeek) for those.
+    Recommend labels for every scanned sender right after the scan:
+      1. the user's own Gmail filters and past filing (history_labeler), no AI
+      2. Jev for the senders still undecided
+    Each answer is written to Redis as it arrives (hash jev:{job_id}:decisions) so the page updates live.
+    Senders nobody can place get no entry; the page offers "Ask AI" (DeepSeek) for those.
     """
     r = get_redis_client()
     status_key, dec_key = f'jev:{job_id}:status', f'jev:{job_id}:decisions'
@@ -305,11 +308,6 @@ def run_jev_classify(job_id, senders, label_names):
     set_status({'status': 'running', 'done': 0, 'total': len(senders)})
     client = None
     try:
-        client = jev_labeler._make_client()
-        if client is None:
-            set_status({'status': 'off', 'done': 0, 'total': len(senders)})
-            return
-
         def on_result(email, decision):
             done['n'] += 1
             if decision:
@@ -318,16 +316,46 @@ def run_jev_classify(job_id, senders, label_names):
             if done['n'] % 10 == 0:
                 set_status({'status': 'running', 'done': done['n'], 'total': len(senders)})
 
+        # 1. The user's own filters and filing history (no AI)
+        hist_decisions, hist_stats = {}, {'filter': 0, 'history': 0}
+        if credentials_dict:
+            try:
+                creds = Credentials(**credentials_dict)
+                if creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                service = build('gmail', 'v1', http=google_auth_httplib2.AuthorizedHttp(
+                    creds, http=httplib2.Http(timeout=30)), cache_discovery=False)
+                hist_decisions, senders_left, hist_stats = history_labeler.classify_from_history(
+                    service, senders, on_result=on_result)
+                print(f"[history] {hist_stats.get('filter', 0)} by filter, {hist_stats.get('history', 0)} by history, "
+                      f"{len(senders_left)} left for Jev, {hist_stats.get('filters_read', 0)} sender filters, "
+                      f"{hist_stats.get('seconds')}s")
+            except Exception as e:
+                print(f'[history] skipped: {type(e).__name__}: {e}')
+                hist_decisions, senders_left = {}, senders
+        else:
+            senders_left = senders
+
+        # 2. Jev for the rest
+        client = jev_labeler._make_client() if jev_labeler.jev_available() else None
+        if client is None:
+            set_status({'status': 'complete', 'done': len(senders), 'total': len(senders),
+                        'decided': len(hist_decisions), 'unknown': len(senders) - len(hist_decisions),
+                        'from_history': len(hist_decisions), 'errors': 0, 'seconds': hist_stats.get('seconds')})
+            return
+
         decisions, unresolved, stats = jev_labeler.classify_with_jev(
-            client, senders, label_names, on_result=on_result, phase_timeout=JEV_ONLOAD_TIMEOUT)
+            client, senders_left, label_names, on_result=on_result, phase_timeout=JEV_ONLOAD_TIMEOUT)
+        decisions = {**decisions, **hist_decisions}
         by_action = Counter(d['action'] for d in decisions.values())
         print(f"[jev] on-load: {by_action.get('use_existing', 0)} existing label, {by_action.get('no_label', 0)} person, "
               f"{by_action.get('new_in_folder', 0)} new-in-folder, {len(senders) - len(decisions)} unknown, "
               f"{stats['jev_errors']} errors, {stats['jev_calls']} calls, {stats['input_tokens']} input tokens, "
               f"{stats['seconds']}s, model={stats['model']}")
         all_failed = stats['senders_answered'] and stats['jev_errors'] == stats['senders_answered']
-        set_status({'status': 'failed' if all_failed else 'complete', 'done': len(senders), 'total': len(senders),
+        set_status({'status': 'failed' if all_failed and not hist_decisions else 'complete', 'done': len(senders), 'total': len(senders),
                     'decided': len(decisions), 'unknown': len(senders) - len(decisions), 'errors': stats['jev_errors'],
+                    'from_history': len(hist_decisions),
                     'seconds': stats['seconds'], 'model': stats['model']})
     except Exception as e:
         print(f'[jev] on-load job failed: {type(e).__name__}: {e}')

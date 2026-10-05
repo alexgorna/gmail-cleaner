@@ -57,9 +57,17 @@ _PERSONAL_Q = {
     ),
 }
 
+_SENDER_RULES = (
+    "Decide by WHY this sender writes to the user, not by which company names appear in the email. "
+    "A label named after a company is for the user's own dealings with that company (its products, account, "
+    "billing, newsletters). Job offers, recruiters, staffing agencies and job applications belong with the "
+    "user's job or career labels even when they mention a company that has its own label. "
+)
+
 _FOLDER_INSTRUCTIONS = (
     "The user organizes Gmail with labels. These are the user's top-level labels; folders hold one sub-label "
-    "per company or topic. Which top-level label does email from this sender belong under? "
+    "per company or topic. " + _SENDER_RULES +
+    "Which top-level label does email from this sender belong under? "
     f'Pick "{NONE_OPTION}" if none of them is a good fit.'
 )
 
@@ -67,6 +75,7 @@ _FOLDER_INSTRUCTIONS = (
 def _sub_instructions(folder):
     return (
         f'Email from this sender belongs in the "{folder}" folder, which holds one sub-label per company or topic. '
+        + _SENDER_RULES +
         'Which existing sub-label is the right place for all email from this sender? '
         f'Pick "{NEW_OPTION}" if none of these sub-labels is specifically about this sender\'s company or topic.'
     )

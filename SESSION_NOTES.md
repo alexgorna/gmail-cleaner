@@ -1104,4 +1104,17 @@ Alex approved the redesign.
 - Cost: options per request drop from 490 to (top-level count) + (one folder's sub-labels).
 
 **Verified:** mocked label tree shaped like Alex's (Promos. with 300 sub-labels, Travels, Emprego, Health, plain Amazon/Netflix): Dunkin' found in the second Promos. chunk at its own 97% (no final round), Kohl's → new_in_folder Promos., recruiter → Emprego/Job Opp even with personal 0.61, vgornatti → no_label (0.73), Amazon (plain label) → use_existing, Amazon Health → new_in_folder Health, every request ≤ 255 options. Headless page test: new_in_folder row text/button, top AI sends hint `{promo@shop.com: "Promos."}`, no page errors. DeepSeek prompt line contains `folder: "Promos."`.
+**Commit:** `597fa96`, deployed ✓. Live run (Oct 5 05:07, 195 senders, 490 labels → 86 top-level, 25 folders): 60 existing label, 7 person, 42 new-in-folder, 86 unknown, 0 errors, 282 calls, 420k input tokens (was 1.09M), 8.6 s.
+
+---
+
+### 46. Jev: decide by why the sender writes, not by names mentioned (October 5 2026)
+
+**Problem Alex spotted:** `adobe@myworkday.com` (job application at Adobe via Workday) and `e.ogull@tenthrevolution.com` (recruiter pitching Adobe roles) were recommended the plain label **Adobe** (folder confidence 0.76 / 0.90). Jev matched on the company name mentioned instead of the purpose; the label "Adobe" is for Alex's own dealings with Adobe, and recruiting belongs under Emprego.
+
+**Fix (`jev_labeler.py`):** shared `_SENDER_RULES` text added to both the folder and the sub-label instructions: decide by why the sender writes; a company-named label is for the user's own dealings with that company; recruiters, staffing agencies, job offers and applications go to job/career labels even when they mention a company with its own label.
+
+**Not yet verified against live Jev** (instructions-only change; check the `[jev-diag]` lines for these two senders after the next scan).
+
+**Backlog (bigger fix):** let Jev learn what each label means from emails Alex already filed there (a few sender examples per label, cached per user), instead of guessing from label names. Would also make Portuguese folder names like "Emprego" unambiguous.
 **Commit:** pending push

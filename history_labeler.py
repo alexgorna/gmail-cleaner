@@ -9,19 +9,23 @@ Works the same for every user, in any language or folder style:
      The label on most of them wins if it covers at least HISTORY_MIN_SHARE of the sample (source "history").
 Senders not decided here go on to Jev.
 
-Gmail calls are sent in batches (HISTORY_BATCH per HTTP request) to stay fast and inside quota.
-Env vars: HISTORY_ENABLED (true), HISTORY_SAMPLE (5), HISTORY_MIN_SHARE (0.6), HISTORY_BATCH (40).
+Lookups run on HISTORY_WORKERS parallel Gmail connections with backoff on rate limits
+(Gmail batch requests were tried first and hit "too many concurrent requests" on a real account).
+Env vars: HISTORY_ENABLED (true), HISTORY_SAMPLE (5), HISTORY_MIN_SHARE (0.6), HISTORY_WORKERS (5), HISTORY_RETRIES (4).
 """
 
 import os
 import re
 import time
+import threading
+import concurrent.futures
 from collections import Counter
 
 HISTORY_ENABLED   = os.environ.get('HISTORY_ENABLED', 'true').lower() == 'true'
 HISTORY_SAMPLE    = int(os.environ.get('HISTORY_SAMPLE', '5'))
 HISTORY_MIN_SHARE = float(os.environ.get('HISTORY_MIN_SHARE', '0.6'))
-HISTORY_BATCH     = int(os.environ.get('HISTORY_BATCH', '40'))
+HISTORY_WORKERS   = int(os.environ.get('HISTORY_WORKERS', '5'))   # parallel Gmail connections
+HISTORY_RETRIES   = int(os.environ.get('HISTORY_RETRIES', '4'))
 HISTORY_DIAG_LOG  = os.environ.get('JEV_DIAG_LOG', 'true').lower() == 'true'
 
 # Filters with these criteria are not plain "this sender -> this label" rules
@@ -79,61 +83,66 @@ def match_filter(email, rules):
     return None
 
 
-def _batched(service, requests, callback):
-    """Run (key, request) pairs through Gmail batch HTTP; callback(key, response, exception)."""
-    for i in range(0, len(requests), HISTORY_BATCH):
-        chunk = requests[i:i + HISTORY_BATCH]
-        batch = service.new_batch_http_request()
-        for key, req in chunk:
-            batch.add(req, callback=lambda _rid, resp, exc, key=key: callback(key, resp, exc), request_id=None)
-        for attempt in range(3):
-            try:
-                batch.execute()
-                break
-            except Exception as e:
-                if attempt == 2:
-                    print(f'[history] batch failed: {type(e).__name__}: {e}')
-                time.sleep(1 + attempt)
+def _execute(req):
+    """Run one Gmail request, backing off on rate limits (429 / 403 rateLimitExceeded) and server errors."""
+    for attempt in range(HISTORY_RETRIES):
+        try:
+            return req.execute()
+        except Exception as e:
+            status = getattr(getattr(e, 'resp', None), 'status', None)
+            text = str(e)
+            retryable = status in (429, 500, 502, 503) or (status == 403 and 'ateLimit' in text)
+            if not retryable or attempt == HISTORY_RETRIES - 1:
+                raise
+            time.sleep(min(0.5 * (2 ** attempt), 4))
 
 
-def history_votes(service, emails, id2name):
-    """{email: Counter(label_name -> number of sampled past emails carrying it), '_sampled': n}"""
-    ids_by_email, errors = {}, Counter()
-
-    def on_list(email, resp, exc):
-        if exc is not None:
-            errors['list'] += 1
-            return
-        ids_by_email[email] = [m['id'] for m in (resp or {}).get('messages', [])][:HISTORY_SAMPLE]
-
+def _sender_history(service, email, id2name):
+    """(Counter of user labels on the sender's last HISTORY_SAMPLE labeled emails, number sampled)."""
     users = service.users()
-    _batched(service, [
-        (e, users.messages().list(userId='me', q=f'from:({e}) has:userlabels', maxResults=HISTORY_SAMPLE))
-        for e in emails
-    ], on_list)
-
-    votes = {e: Counter() for e in emails}
-    sampled = Counter()
-
-    def on_get(key, resp, exc):
-        email = key[0]
-        if exc is not None:
-            errors['get'] += 1
-            return
-        sampled[email] += 1
-        for lid in (resp or {}).get('labelIds', []):
+    res = _execute(users.messages().list(userId='me', q=f'from:({email}) has:userlabels',
+                                         maxResults=HISTORY_SAMPLE))
+    votes, n = Counter(), 0
+    for m in (res or {}).get('messages', [])[:HISTORY_SAMPLE]:
+        msg = _execute(users.messages().get(userId='me', id=m['id'], format='minimal'))
+        n += 1
+        for lid in (msg or {}).get('labelIds', []):
             if lid in id2name:
-                votes[email][id2name[lid]] += 1
+                votes[id2name[lid]] += 1
+    return votes, n
 
-    gets = [((e, mid), users.messages().get(userId='me', id=mid, format='minimal'))
-            for e, mids in ids_by_email.items() for mid in mids]
-    _batched(service, gets, on_get)
+
+def history_votes(service_factory, emails, id2name, on_progress=None):
+    """
+    {email: Counter}, {email: sampled}. Runs HISTORY_WORKERS senders in parallel, each worker with its own
+    Gmail client (the Google client is not thread-safe). Failed senders are simply left out.
+    """
+    local = threading.local()
+
+    def svc():
+        if not hasattr(local, 'service'):
+            local.service = service_factory()
+        return local.service
+
+    votes, sampled, errors = {}, {}, Counter()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=HISTORY_WORKERS) as pool:
+        futs = {pool.submit(lambda e=e: _sender_history(svc(), e, id2name)): e for e in emails}
+        for i, fut in enumerate(concurrent.futures.as_completed(futs), 1):
+            e = futs[fut]
+            try:
+                votes[e], sampled[e] = fut.result()
+            except Exception as ex:
+                errors[type(ex).__name__] += 1
+                if sum(errors.values()) <= 3:
+                    print(f'[history] lookup failed for one sender: {type(ex).__name__}: {str(ex)[:200]}')
+            if on_progress and (i % 5 == 0 or i == len(futs)):
+                on_progress(i, len(futs))
     if errors:
-        print(f'[history] Gmail errors: {dict(errors)}')
+        print(f'[history] Gmail errors after retries: {dict(errors)}')
     return votes, sampled
 
 
-def classify_from_history(service, senders, on_result=None):
+def classify_from_history(service_factory, senders, on_result=None, on_progress=None):
     """
     Returns (decisions, remaining, stats).
       decisions: {email: {'action': 'use_existing', 'label', 'confidence', 'source': 'filter'|'history'}}
@@ -141,12 +150,13 @@ def classify_from_history(service, senders, on_result=None):
     """
     started = time.monotonic()
     stats = {'filter': 0, 'history': 0, 'filters_read': 0}
-    if not HISTORY_ENABLED or service is None:
+    if not HISTORY_ENABLED or service_factory is None:
         return {}, list(senders), stats
 
     def email_of(item):
         return (item.get('email') if isinstance(item, dict) else str(item)).lower()
 
+    service = service_factory()
     id2name = user_label_map(service)
     rules = load_sender_filters(service, id2name)
     stats['filters_read'] = len(rules)
@@ -163,7 +173,7 @@ def classify_from_history(service, senders, on_result=None):
         else:
             remaining.append(item)
 
-    votes, sampled = history_votes(service, [email_of(i) for i in remaining], id2name)
+    votes, sampled = history_votes(service_factory, [email_of(i) for i in remaining], id2name, on_progress)
     still = []
     for item in remaining:
         email = email_of(item)

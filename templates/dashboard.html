@@ -1777,7 +1777,9 @@
             if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
             const added = _mergeJevDecisions(data.decisions || {});
             const btn = document.getElementById('ai-suggest-btn');
-            if (data.status === 'running' && data.total) {
+            if (data.status === 'running' && data.phase === 'history' && data.history_total) {
+                btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status"></span> History ${data.checked || 0}/${data.history_total}`;
+            } else if (data.status === 'running' && data.total) {
                 btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status"></span> ${data.done || 0}/${data.total}`;
             }
             if (data.status === 'complete') {
@@ -1789,7 +1791,7 @@
                 return;
             }
             if (added) { renderTable(); updateAIBulkButtons(); }
-            const doneNow = (data.done || 0) + Object.keys(data.decisions || {}).length;
+            const doneNow = (data.done || 0) + (data.checked || 0) + Object.keys(data.decisions || {}).length;
             if (doneNow !== jevLastProgress.done) {
                 jevLastProgress = { done: doneNow, at: Date.now() };
             } else if (Date.now() - jevLastProgress.at > JEV_STALL_MS) {

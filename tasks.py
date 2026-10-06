@@ -323,10 +323,16 @@ def run_jev_classify(job_id, senders, label_names, credentials_dict=None):
                 creds = Credentials(**credentials_dict)
                 if creds.expired and creds.refresh_token:
                     creds.refresh(Request())
-                service = build('gmail', 'v1', http=google_auth_httplib2.AuthorizedHttp(
-                    creds, http=httplib2.Http(timeout=30)), cache_discovery=False)
+                def gmail_client():
+                    return build('gmail', 'v1', http=google_auth_httplib2.AuthorizedHttp(
+                        creds, http=httplib2.Http(timeout=30)), cache_discovery=False)
+
+                def on_history_progress(checked, total):
+                    set_status({'status': 'running', 'phase': 'history', 'checked': checked,
+                                'history_total': total, 'done': done['n'], 'total': len(senders)})
+
                 hist_decisions, senders_left, hist_stats = history_labeler.classify_from_history(
-                    service, senders, on_result=on_result)
+                    gmail_client, senders, on_result=on_result, on_progress=on_history_progress)
                 print(f"[history] {hist_stats.get('filter', 0)} by filter, {hist_stats.get('history', 0)} by history, "
                       f"{len(senders_left)} left for Jev, {hist_stats.get('filters_read', 0)} sender filters, "
                       f"{hist_stats.get('seconds')}s")

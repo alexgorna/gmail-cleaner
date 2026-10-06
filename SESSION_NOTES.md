@@ -1174,4 +1174,18 @@ Product step 1 from #48 (works for any user, any language or folder style; no AI
 - `dashboard.html`: recommendations keep `basis` (`filter` / `history` / `jev`) and `evidence`; the ⓘ tooltip says "Based on your existing Gmail filter for this sender." or "You filed 3 of 3 recent emails from this sender here."
 
 **Verified (simulated Gmail):** filter with OR list and domain filter matched; filter with a subject criterion ignored; history 3/3 → Services/AgentMail, 1/1 → Parent Square; 2/2 split → left for Jev; end to end through the Celery task with fakeredis: 4 decided from history/filters, Jev only received the 3 remaining senders.
+**Commit:** `2629133`, deployed ✓. First live run (Oct 6 02:53, 150 senders, 709 sender filters): 7 by filter, 16 by history, 127 left for Jev; Jev 5.2 s. **But** the history step took 25.2 s with no visible progress (Alex: "it is stuck"), and Gmail rejected 51 list + 10 get calls inside the batches (too many concurrent requests), so those senders were never checked. Good history hits: adobe@myworkday.com → Jobs (4/4), Universal → Promos./Universal Orlando Resort (5/5), ClassLink → Parent Portal (5/5), Namecheap 3/3, Starfish 5/5. Observed: utility labels like `.Archive` / `.Sanitize` show up in history votes (e.g. vgornatti@gmail.com → .Archive 5/5).
+
+---
+
+### 50. History step: parallel connections, retries, visible progress (October 6 2026)
+
+- `history_labeler.py`: Gmail batch HTTP replaced by `HISTORY_WORKERS` (5) threads, each with its own Gmail client (`service_factory`; the Google client isn't thread-safe). Every call goes through `_execute()` with backoff on 429 / 403 rateLimitExceeded / 5xx (`HISTORY_RETRIES` 4: 0.5, 1, 2 s). A sender whose lookup still fails just goes on to Jev.
+- `classify_from_history(service_factory, senders, on_result, on_progress)`; progress every 5 senders.
+- `tasks.py`: status during history = `{phase: 'history', checked, history_total}`.
+- `dashboard.html`: AI button shows **History 40/150** during that phase; the 90 s stall guard counts `checked` as progress.
+
+**Verified (simulated Gmail):** a sender whose first `messages.list` returns 429 is retried and still resolved from history (AgentMail 3/3); filters, mixed history and the end-to-end Celery task test from #49 still pass.
+
+**Open question for Alex:** utility labels (`.Archive`, `.Sanitize`) are real user behavior but not topical folders; decide later whether history should skip labels that look like workflow states. Not changed.
 **Commit:** pending push

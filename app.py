@@ -1,6 +1,5 @@
 import os
 import json
-import hashlib
 import time
 import uuid
 import httplib2
@@ -20,7 +19,6 @@ from googleapiclient.errors import HttpError
 
 from tasks import run_inbox_scan, run_ai_suggestions, run_jev_classify
 import jev_labeler
-import history_labeler
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -357,7 +355,7 @@ def ai_results(job_id):
 def jev_classify():
     if not get_creds():
         return jsonify({'error': 'Not logged in'}), 401
-    if not jev_labeler.jev_available() and not history_labeler.HISTORY_ENABLED:
+    if not jev_labeler.jev_available():
         return jsonify({'enabled': False})
     scan_job_id = session.get('scan_job_id')
     raw = get_redis_client().get(f'scan:{scan_job_id}:results') if scan_job_id else None
@@ -377,9 +375,7 @@ def jev_classify():
 
     job_id = str(uuid.uuid4())
     _remember_job('jev_job_ids', job_id, keep=5)
-    user_email = (session.get('user_info') or {}).get('email', '')
-    user_key = hashlib.sha256(user_email.lower().encode()).hexdigest()[:16] if user_email else None
-    run_jev_classify.delay(job_id, senders, label_names, session.get('credentials'), user_key)
+    run_jev_classify.delay(job_id, senders, label_names)
     print(f"[jev_classify] Queued {job_id} — {len(senders)} senders, {len(label_names)} labels")
     return jsonify({'enabled': True, 'job_id': job_id, 'total': len(senders)})
 

@@ -1200,4 +1200,15 @@ Product step 1 from #48 (works for any user, any language or folder style; no AI
 - **Page:** when `jev_done` arrives, the page unlocks (AI button normal, Ask AI buttons shown, log "Recommendations ready. Checking your past emails to improve them…") and keeps polling. A later history/filter answer replaces a Jev answer only if that row still shows Jev's untouched suggestion (not applied, dismissed, or manually set). `topAIBusy` keeps the end of history from resetting the AI button during a top-AI request. Final message: "Recommendations ready for N senders (M from your own filters and history)".
 
 **Verified:** fake Gmail with 0.4 s per list / 0.2 s per get: Jev answers present at 0.05 s, history finished at 1.07 s and upgraded AgentMail and Parent Square, unknown sender kept Jev's answer; second scan with the same user key made **0** Gmail list calls. Headless page: page unlocked with Ask AI during history, then rows upgraded (new_in_folder → history label; Ask AI → filter label), tooltip "You filed 3 of 3 recent emails from this sender here", no page errors.
+**Commit:** `d92199d`, deployed ✓ (then rolled back, see #52).
+
+---
+
+### 52. Rollback: history step removed (October 6 2026)
+
+**Alex: "I don't like that history thing, roll back."** Code restored to `6f9455b` (Jev folder-aware matching, two-way name match, 0.50 bar for name-matched picks, Ask AI per row):
+- `app.py`, `tasks.py`, `templates/dashboard.html` checked out from `6f9455b`; `history_labeler.py` deleted.
+- Removed with it: filters/history lookups, parallel Gmail lookups and retries, the per-user history cache, the "History n/N" progress and the jev_done page unlock.
+- Leftover Redis keys `hist:<user>:<sender>` expire on their own within 7 days; nothing reads them.
+- Lessons kept for later: on the real account history took 25–28 s for 150 senders and Gmail batch HTTP hit "too many concurrent requests"; the parallel + cache design (#51) is in git history (`d92199d`) if this idea comes back.
 **Commit:** pending push

@@ -11,7 +11,7 @@ Senders not decided here go on to Jev.
 
 Lookups run on HISTORY_WORKERS parallel Gmail connections with backoff on rate limits
 (Gmail batch requests were tried first and hit "too many concurrent requests" on a real account).
-Env vars: HISTORY_ENABLED (true), HISTORY_SAMPLE (5), HISTORY_MIN_SHARE (0.6), HISTORY_WORKERS (5), HISTORY_RETRIES (4).
+Env vars: HISTORY_ENABLED (true), HISTORY_SAMPLE (3), HISTORY_MIN_SHARE (0.6), HISTORY_WORKERS (5), HISTORY_RETRIES (4).
 """
 
 import os
@@ -22,7 +22,7 @@ import concurrent.futures
 from collections import Counter
 
 HISTORY_ENABLED   = os.environ.get('HISTORY_ENABLED', 'true').lower() == 'true'
-HISTORY_SAMPLE    = int(os.environ.get('HISTORY_SAMPLE', '5'))
+HISTORY_SAMPLE    = int(os.environ.get('HISTORY_SAMPLE', '3'))
 HISTORY_MIN_SHARE = float(os.environ.get('HISTORY_MIN_SHARE', '0.6'))
 HISTORY_WORKERS   = int(os.environ.get('HISTORY_WORKERS', '5'))   # parallel Gmail connections
 HISTORY_RETRIES   = int(os.environ.get('HISTORY_RETRIES', '4'))
@@ -112,7 +112,7 @@ def _sender_history(service, email, id2name):
     return votes, n
 
 
-def history_votes(service_factory, emails, id2name, on_progress=None):
+def history_votes(service_factory, emails, id2name, on_progress=None, cache=None):
     """
     {email: Counter}, {email: sampled}. Runs HISTORY_WORKERS senders in parallel, each worker with its own
     Gmail client (the Google client is not thread-safe). Failed senders are simply left out.
@@ -125,12 +125,23 @@ def history_votes(service_factory, emails, id2name, on_progress=None):
         return local.service
 
     votes, sampled, errors = {}, {}, Counter()
+    todo = []
+    for e in emails:
+        hit = cache.get(e) if cache else None
+        if hit is not None:
+            votes[e], sampled[e] = Counter(hit[0]), hit[1]
+        else:
+            todo.append(e)
+    if cache and len(todo) < len(emails):
+        print(f'[history] cache: {len(emails) - len(todo)} senders already known, {len(todo)} to look up')
     with concurrent.futures.ThreadPoolExecutor(max_workers=HISTORY_WORKERS) as pool:
-        futs = {pool.submit(lambda e=e: _sender_history(svc(), e, id2name)): e for e in emails}
+        futs = {pool.submit(lambda e=e: _sender_history(svc(), e, id2name)): e for e in todo}
         for i, fut in enumerate(concurrent.futures.as_completed(futs), 1):
             e = futs[fut]
             try:
                 votes[e], sampled[e] = fut.result()
+                if cache:
+                    cache.set(e, dict(votes[e]), sampled[e])
             except Exception as ex:
                 errors[type(ex).__name__] += 1
                 if sum(errors.values()) <= 3:
@@ -142,7 +153,7 @@ def history_votes(service_factory, emails, id2name, on_progress=None):
     return votes, sampled
 
 
-def classify_from_history(service_factory, senders, on_result=None, on_progress=None):
+def classify_from_history(service_factory, senders, on_result=None, on_progress=None, cache=None):
     """
     Returns (decisions, remaining, stats).
       decisions: {email: {'action': 'use_existing', 'label', 'confidence', 'source': 'filter'|'history'}}
@@ -173,7 +184,7 @@ def classify_from_history(service_factory, senders, on_result=None, on_progress=
         else:
             remaining.append(item)
 
-    votes, sampled = history_votes(service_factory, [email_of(i) for i in remaining], id2name, on_progress)
+    votes, sampled = history_votes(service_factory, [email_of(i) for i in remaining], id2name, on_progress, cache)
     still = []
     for item in remaining:
         email = email_of(item)

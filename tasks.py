@@ -6,6 +6,7 @@ import redis
 import httplib2
 import google_auth_httplib2
 import concurrent.futures
+import threading
 from collections import Counter
 from email.utils import parseaddr
 
@@ -288,84 +289,130 @@ JEV_MAX_SENDERS = int(os.environ.get('JEV_MAX_SENDERS', '2000'))
 JEV_ONLOAD_TIMEOUT = int(os.environ.get('JEV_ONLOAD_TIMEOUT', '600'))
 
 
+HISTORY_CACHE_TTL = int(os.environ.get('HISTORY_CACHE_TTL', str(7 * 24 * 3600)))
+
+
+class _HistoryCache:
+    """Per-user cache of each sender's filing history in Redis (keys hist:<user>:<sender>)."""
+    def __init__(self, r, user_key):
+        self.r, self.prefix = r, f'hist:{user_key}:'
+
+    def get(self, email):
+        raw = self.r.get(self.prefix + email)
+        return json.loads(raw) if raw else None
+
+    def set(self, email, votes, sampled):
+        self.r.setex(self.prefix + email, HISTORY_CACHE_TTL, json.dumps([votes, sampled]))
+
+
 @celery_app.task
-def run_jev_classify(job_id, senders, label_names, credentials_dict=None):
+def run_jev_classify(job_id, senders, label_names, credentials_dict=None, user_key=None):
     """
-    Recommend labels for every scanned sender right after the scan:
-      1. the user's own Gmail filters and past filing (history_labeler), no AI
-      2. Jev for the senders still undecided
-    Each answer is written to Redis as it arrives (hash jev:{job_id}:decisions) so the page updates live.
-    Senders nobody can place get no entry; the page offers "Ask AI" (DeepSeek) for those.
+    Recommend labels for every scanned sender right after the scan. Two sources run IN PARALLEL:
+      - Jev on every sender (fast: answers in ~5 s, so the page is usable right away)
+      - the user's own Gmail filters and filing history (slower; cached per user for HISTORY_CACHE_TTL)
+    History is the stronger signal: when it decides a sender it overwrites Jev's answer, and Jev never
+    overwrites history. Answers stream into Redis (hash jev:{job_id}:decisions) so the page updates live.
+    Status carries jev_done so the page can unlock while history is still checking.
     """
     r = get_redis_client()
     status_key, dec_key = f'jev:{job_id}:status', f'jev:{job_id}:decisions'
     senders = senders[:JEV_MAX_SENDERS]
-    done = {'n': 0}
+    lock = threading.Lock()
+    st = {'jev_n': 0, 'jev_done': False, 'checked': 0, 'history_total': 0, 'history_done': not credentials_dict}
+    hist_owned, jev_decisions = set(), {}
+    hist_result = {'decisions': {}, 'stats': {}}
 
     def set_status(data):
         r.setex(status_key, JEV_JOB_TTL, json.dumps(data))
 
-    set_status({'status': 'running', 'done': 0, 'total': len(senders)})
-    client = None
-    try:
-        def on_result(email, decision):
-            done['n'] += 1
+    def push_running():
+        set_status({'status': 'running', 'phase': 'history' if st['jev_done'] else 'jev',
+                    'jev_done': st['jev_done'], 'done': st['jev_n'], 'total': len(senders),
+                    'checked': st['checked'], 'history_total': st['history_total']})
+
+    def write(email, decision):
+        r.hset(dec_key, email, json.dumps(decision))
+        r.expire(dec_key, JEV_JOB_TTL)
+
+    def on_history(email, decision):
+        if decision:
+            with lock:
+                hist_owned.add(email)
+                write(email, decision)
+
+    def on_history_progress(checked, total):
+        st['checked'], st['history_total'] = checked, total
+        push_running()
+
+    def on_jev(email, decision):
+        with lock:
+            st['jev_n'] += 1
             if decision:
-                r.hset(dec_key, email, json.dumps(decision))
-                r.expire(dec_key, JEV_JOB_TTL)
-            if done['n'] % 10 == 0:
-                set_status({'status': 'running', 'done': done['n'], 'total': len(senders)})
+                jev_decisions[email] = decision
+                if email not in hist_owned:
+                    write(email, decision)
+        if st['jev_n'] % 10 == 0:
+            push_running()
 
-        # 1. The user's own filters and filing history (no AI)
-        hist_decisions, hist_stats = {}, {'filter': 0, 'history': 0}
+    def run_history():
+        try:
+            creds = Credentials(**credentials_dict)
+            if creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+
+            def gmail_client():
+                return build('gmail', 'v1', http=google_auth_httplib2.AuthorizedHttp(
+                    creds, http=httplib2.Http(timeout=30)), cache_discovery=False)
+
+            cache = _HistoryCache(r, user_key) if user_key else None
+            d, left, stats = history_labeler.classify_from_history(
+                gmail_client, senders, on_result=on_history, on_progress=on_history_progress, cache=cache)
+            hist_result['decisions'], hist_result['stats'] = d, stats
+            print(f"[history] {stats.get('filter', 0)} by filter, {stats.get('history', 0)} by history, "
+                  f"{len(left)} not in history, {stats.get('filters_read', 0)} sender filters, {stats.get('seconds')}s")
+        except Exception as e:
+            print(f'[history] skipped: {type(e).__name__}: {e}')
+        finally:
+            st['history_done'] = True
+
+    push_running()
+    client = None
+    hist_thread = None
+    try:
         if credentials_dict:
-            try:
-                creds = Credentials(**credentials_dict)
-                if creds.expired and creds.refresh_token:
-                    creds.refresh(Request())
-                def gmail_client():
-                    return build('gmail', 'v1', http=google_auth_httplib2.AuthorizedHttp(
-                        creds, http=httplib2.Http(timeout=30)), cache_discovery=False)
+            hist_thread = threading.Thread(target=run_history, daemon=True)
+            hist_thread.start()
 
-                def on_history_progress(checked, total):
-                    set_status({'status': 'running', 'phase': 'history', 'checked': checked,
-                                'history_total': total, 'done': done['n'], 'total': len(senders)})
-
-                hist_decisions, senders_left, hist_stats = history_labeler.classify_from_history(
-                    gmail_client, senders, on_result=on_result, on_progress=on_history_progress)
-                print(f"[history] {hist_stats.get('filter', 0)} by filter, {hist_stats.get('history', 0)} by history, "
-                      f"{len(senders_left)} left for Jev, {hist_stats.get('filters_read', 0)} sender filters, "
-                      f"{hist_stats.get('seconds')}s")
-            except Exception as e:
-                print(f'[history] skipped: {type(e).__name__}: {e}')
-                hist_decisions, senders_left = {}, senders
-        else:
-            senders_left = senders
-
-        # 2. Jev for the rest
+        stats = {'jev_errors': 0, 'senders_answered': 0, 'seconds': 0, 'model': None, 'jev_calls': 0,
+                 'input_tokens': 0}
         client = jev_labeler._make_client() if jev_labeler.jev_available() else None
-        if client is None:
-            set_status({'status': 'complete', 'done': len(senders), 'total': len(senders),
-                        'decided': len(hist_decisions), 'unknown': len(senders) - len(hist_decisions),
-                        'from_history': len(hist_decisions), 'errors': 0, 'seconds': hist_stats.get('seconds')})
-            return
+        if client is not None:
+            _d, _u, stats = jev_labeler.classify_with_jev(
+                client, senders, label_names, on_result=on_jev, phase_timeout=JEV_ONLOAD_TIMEOUT)
+        st['jev_done'] = True
+        push_running()
 
-        decisions, unresolved, stats = jev_labeler.classify_with_jev(
-            client, senders_left, label_names, on_result=on_result, phase_timeout=JEV_ONLOAD_TIMEOUT)
-        decisions = {**decisions, **hist_decisions}
+        if hist_thread is not None:
+            hist_thread.join(timeout=JEV_ONLOAD_TIMEOUT)
+
+        decisions = {**jev_decisions, **hist_result['decisions']}
         by_action = Counter(d['action'] for d in decisions.values())
-        print(f"[jev] on-load: {by_action.get('use_existing', 0)} existing label, {by_action.get('no_label', 0)} person, "
+        hs = hist_result['stats']
+        print(f"[jev] on-load: {by_action.get('use_existing', 0)} existing label "
+              f"({hs.get('filter', 0)} filter, {hs.get('history', 0)} history), {by_action.get('no_label', 0)} person, "
               f"{by_action.get('new_in_folder', 0)} new-in-folder, {len(senders) - len(decisions)} unknown, "
               f"{stats['jev_errors']} errors, {stats['jev_calls']} calls, {stats['input_tokens']} input tokens, "
-              f"{stats['seconds']}s, model={stats['model']}")
+              f"Jev {stats['seconds']}s, history {hs.get('seconds')}s, model={stats['model']}")
         all_failed = stats['senders_answered'] and stats['jev_errors'] == stats['senders_answered']
-        set_status({'status': 'failed' if all_failed and not hist_decisions else 'complete', 'done': len(senders), 'total': len(senders),
+        set_status({'status': 'failed' if all_failed and not hist_result['decisions'] else 'complete',
+                    'jev_done': True, 'done': len(senders), 'total': len(senders),
                     'decided': len(decisions), 'unknown': len(senders) - len(decisions), 'errors': stats['jev_errors'],
-                    'from_history': len(hist_decisions),
-                    'seconds': stats['seconds'], 'model': stats['model']})
+                    'from_history': len(hist_result['decisions']),
+                    'seconds': stats['seconds'], 'history_seconds': hs.get('seconds'), 'model': stats['model']})
     except Exception as e:
         print(f'[jev] on-load job failed: {type(e).__name__}: {e}')
-        set_status({'status': 'failed', 'error': str(e), 'done': done['n'], 'total': len(senders)})
+        set_status({'status': 'failed', 'error': str(e), 'done': st['jev_n'], 'total': len(senders)})
     finally:
         if client is not None:
             try:

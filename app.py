@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 import time
 import uuid
 import httplib2
@@ -376,7 +377,9 @@ def jev_classify():
 
     job_id = str(uuid.uuid4())
     _remember_job('jev_job_ids', job_id, keep=5)
-    run_jev_classify.delay(job_id, senders, label_names, session.get('credentials'))
+    user_email = (session.get('user_info') or {}).get('email', '')
+    user_key = hashlib.sha256(user_email.lower().encode()).hexdigest()[:16] if user_email else None
+    run_jev_classify.delay(job_id, senders, label_names, session.get('credentials'), user_key)
     print(f"[jev_classify] Queued {job_id} — {len(senders)} senders, {len(label_names)} labels")
     return jsonify({'enabled': True, 'job_id': job_id, 'total': len(senders)})
 

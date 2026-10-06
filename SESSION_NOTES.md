@@ -1187,5 +1187,17 @@ Product step 1 from #48 (works for any user, any language or folder style; no AI
 
 **Verified (simulated Gmail):** a sender whose first `messages.list` returns 429 is retried and still resolved from history (AgentMail 3/3); filters, mixed history and the end-to-end Celery task test from #49 still pass.
 
-**Open question for Alex:** utility labels (`.Archive`, `.Sanitize`) are real user behavior but not topical folders; decide later whether history should skip labels that look like workflow states. Not changed.
+**Decision (Alex):** keep following each user's history as is, including utility labels like `.Sanitize` (his own "deal with later" label); don't special-case naming patterns that other users won't share. Possible generic feature later: let each user exclude labels from recommendations.
+**Commit:** `763cde6`, deployed ✓. Live run (Oct 6 02:59, 150 senders): no Gmail errors, 7 by filter + 28 by history (was 23), but history took **28.0 s** (Jev 4.6 s, task 32.7 s). Alex: "That history thing takes too long, I am not liking it." Also decided: keep following history as is, including utility labels like `.Sanitize` (no name-based special cases); generic idea logged as backlog gen-04 (let users exclude labels).
+
+---
+
+### 51. History in parallel with Jev, cached per user, 3-email sample (October 6 2026)
+
+- **`tasks.run_jev_classify(..., credentials_dict, user_key)`** now runs history in a background thread **while Jev classifies every sender**. Jev answers land in ~5 s; status gets `jev_done: true`. History decisions overwrite Jev's in the Redis hash; Jev never overwrites history (`hist_owned` set under a lock). Final log line: `existing label (N filter, N history) … Jev Xs, history Ys`.
+- **Cache:** `_HistoryCache` stores each sender's history votes in Redis `hist:<user_key>:<sender>` for `HISTORY_CACHE_TTL` (7 days). `user_key` = first 16 hex of sha256(user email) from `session['user_info']`, computed in `app.py`. Only lookups that succeeded are cached. Filters are still read fresh each time (1 call).
+- **`HISTORY_SAMPLE` 5 → 3** (2 of 3 must agree): about 40% fewer Gmail calls.
+- **Page:** when `jev_done` arrives, the page unlocks (AI button normal, Ask AI buttons shown, log "Recommendations ready. Checking your past emails to improve them…") and keeps polling. A later history/filter answer replaces a Jev answer only if that row still shows Jev's untouched suggestion (not applied, dismissed, or manually set). `topAIBusy` keeps the end of history from resetting the AI button during a top-AI request. Final message: "Recommendations ready for N senders (M from your own filters and history)".
+
+**Verified:** fake Gmail with 0.4 s per list / 0.2 s per get: Jev answers present at 0.05 s, history finished at 1.07 s and upgraded AgentMail and Parent Square, unknown sender kept Jev's answer; second scan with the same user key made **0** Gmail list calls. Headless page: page unlocked with Ask AI during history, then rows upgraded (new_in_folder → history label; Ask AI → filter label), tooltip "You filed 3 of 3 recent emails from this sender here", no page errors.
 **Commit:** pending push

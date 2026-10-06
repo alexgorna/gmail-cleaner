@@ -688,10 +688,12 @@
     let jevJobId = null;
     let jevPollTimer = null;
     let jevSeen = new Set();        // emails already merged from Jev (so a dismissed one isn't re-added)
+    let jevBasis = {};              // email -> 'jev' | 'history' | 'filter' of the merged answer
     let jevLastProgress = { done: -1, at: 0 };  // stall detection
     const JEV_STALL_MS = 90000;
     let aiAsking = new Set();       // emails with an in-flight per-row "Ask AI" request
     const AI_BTN_HTML = '<i class="bi bi-stars me-1"></i> AI';
+    let topAIBusy = false;          // the top AI button has a request in flight
 
     window.onload = async function() {
         fetchUserInfo();
@@ -1652,6 +1654,7 @@
         if (perRow) {
             renderTable();
         } else {
+            topAIBusy = true;
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span> Thinking...';
         }
@@ -1723,7 +1726,7 @@
             processAISuggestions(data);
             const missing = displayedSenders.filter(e => !aiSuggestions[e]).length;
             if (missing) logToScanDebugger(`AI had no suggestion for ${missing} sender(s).`, 'info');
-            if (!perRow) { btn.innerHTML = AI_BTN_HTML; btn.disabled = false; }
+            if (!perRow) { topAIBusy = false; btn.innerHTML = AI_BTN_HTML; btn.disabled = false; }
 
         } catch (err) {
             displayedSenders.forEach(e => aiAsking.delete(e));
@@ -1732,6 +1735,7 @@
             if (perRow) {
                 renderTable();
             } else {
+                topAIBusy = false;
                 btn.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i> AI Unavailable';
                 setTimeout(() => { btn.innerHTML = AI_BTN_HTML; btn.disabled = false; }, 4000);
             }
@@ -1743,6 +1747,7 @@
         if (jevPollTimer) { clearTimeout(jevPollTimer); jevPollTimer = null; }
         aiSuggestions = {};
         jevSeen = new Set();
+        jevBasis = {};
         jevJobId = null;
         jevState = 'running';
         const btn = document.getElementById('ai-suggest-btn');
@@ -1777,13 +1782,22 @@
             if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
             const added = _mergeJevDecisions(data.decisions || {});
             const btn = document.getElementById('ai-suggest-btn');
-            if (data.status === 'running' && data.phase === 'history' && data.history_total) {
-                btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status"></span> History ${data.checked || 0}/${data.history_total}`;
+            if (data.status === 'running' && data.jev_done) {
+                if (jevState === 'running') {
+                    // Jev is finished: unlock the page (Ask AI buttons, top AI) while history keeps improving rows
+                    jevState = 'history';
+                    btn.innerHTML = AI_BTN_HTML;
+                    btn.disabled = false;
+                    logToScanDebugger('Recommendations ready. Checking your past emails to improve them…', 'info');
+                    renderTable();
+                    updateAIBulkButtons();
+                }
             } else if (data.status === 'running' && data.total) {
                 btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status"></span> ${data.done || 0}/${data.total}`;
             }
             if (data.status === 'complete') {
-                _finishJev('complete', `Recommendations ready for ${data.decided ?? Object.keys(aiSuggestions).length} senders in ${data.seconds ?? '?'}s. ${data.unknown ?? 0} need AI.`);
+                if (added) { renderTable(); }
+                _finishJev('complete', `Recommendations ready for ${data.decided ?? Object.keys(aiSuggestions).length} senders (${data.from_history ?? 0} from your own filters and history). ${data.unknown ?? 0} need AI.`);
                 return;
             }
             if (data.status === 'failed' || data.status === 'off') {
@@ -1807,9 +1821,21 @@
     function _mergeJevDecisions(decisions) {
         let added = 0;
         for (const [email, d] of Object.entries(decisions)) {
-            if (jevSeen.has(email)) continue;
+            const basis = d.source || 'jev';
+            const strong = basis === 'history' || basis === 'filter';
+            if (jevSeen.has(email)) {
+                // History arrives after Jev: upgrade the row only if Jev's answer is still shown untouched
+                const cur = aiSuggestions[email];
+                const upgradable = strong && jevBasis[email] === 'jev' && cur && cur.source === 'jev'
+                    && !aiAppliedRows.has(email) && !pendingActions[email];
+                if (!upgradable) continue;
+                delete aiSuggestions[email];
+            } else if (aiSuggestions[email] || aiAppliedRows.has(email)) {
+                jevSeen.add(email); jevBasis[email] = basis;
+                continue;
+            }
             jevSeen.add(email);
-            if (aiSuggestions[email] || aiAppliedRows.has(email)) continue;
+            jevBasis[email] = basis;
             if (d.action === 'no_label') {
                 aiSuggestions[email] = { action: 'no_label', source: 'jev', confidence: d.confidence };
                 added++;
@@ -1832,8 +1858,7 @@
         if (jevPollTimer) { clearTimeout(jevPollTimer); jevPollTimer = null; }
         jevState = state;
         const btn = document.getElementById('ai-suggest-btn');
-        btn.innerHTML = AI_BTN_HTML;
-        btn.disabled = false;
+        if (!topAIBusy) { btn.innerHTML = AI_BTN_HTML; btn.disabled = false; }
         logToScanDebugger(message, state === 'complete' ? 'success' : (state === 'failed' ? 'error' : 'info'));
         renderTable();
         updateAIBulkButtons();

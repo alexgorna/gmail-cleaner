@@ -1211,4 +1211,19 @@ Product step 1 from #48 (works for any user, any language or folder style; no AI
 - Removed with it: filters/history lookups, parallel Gmail lookups and retries, the per-user history cache, the "History n/N" progress and the jev_done page unlock.
 - Leftover Redis keys `hist:<user>:<sender>` expire on their own within 7 days; nothing reads them.
 - Lessons kept for later: on the real account history took 25–28 s for 150 senders and Gmail batch HTTP hit "too many concurrent requests"; the parallel + cache design (#51) is in git history (`d92199d`) if this idea comes back.
+**Commit:** `fd3c8cf`, deployed ✓ (live test: "Recommendations ready for 117 senders in 6.8s").
+
+---
+
+### 53. Apply Actions: don't cross out rows that failed; show each row's settings (October 8 2026)
+
+**From Alex's test (12 actions, 5 min):** labeling without a filter took 1–2 s per sender; with a filter 25–60 s each, so **filter creation is the whole slowness** (answers backlog perf-01). Two filters failed: `smily@check24.de` "read operation timed out" (60 s), and `maria.york@udx.com` HttpError 400 "Precondition check failed" (failedPrecondition). Hypothesis, not yet confirmed: the account is near Gmail's ~1,000-filter limit (an earlier run saw 709 sender filters), which also makes filter creation slow.
+
+**Alex's two complaints:**
+1. Failed rows were crossed out like successful ones. **Fixed:** `apply_actions` rows now carry `outcome`: `ok`, `partial` (emails labeled, filter failed or skipped with ⚠) or `error`. The page only crosses out `ok`. `partial` rows get an amber left border and "Emails labeled, but the filter for future emails failed. Click Apply Actions to retry."; `error` rows a red border and "This action failed…". Their pending action is kept, so Apply Actions retries only them. A partial row is counted once in the "organized" total (`partialCounted`).
+2. maria.york: Alex is sure he unticked Skip Inbox and Auto Label, yet a filter was attempted (the server only tries a filter when the request says autoLabel true). **Not reproduced:** headless test of pick label → untick both → Apply sent `skipInbox:false, autoLabel:false`. **Added tracing:** each label row's log line now shows what the page sent, e.g. `[skip inbox off, auto label on]`, so the next occurrence can be traced.
+
+**Verified:** headless page with a mocked apply stream (one ok, one partial, one error): only the ok row struck through; partial/error rows kept with notes; second Apply sent only the two failed rows, then all three crossed out; no page errors.
+
+**Still proposed (not built):** label first and create filters in the background with retries; one filter per label instead of per sender; warn near the 1,000-filter limit.
 **Commit:** pending push

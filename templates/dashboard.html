@@ -72,6 +72,12 @@
         .row-processed { opacity: 0.5; background-color: #f8f9fa; pointer-events: none; }
         .row-processed .email-text { text-decoration: line-through; color: #999; }
         .row-processed .action-select { background-color: #e9ecef; border-color: #dee2e6; color: #6c757d; }
+        /* Row whose emails were labeled but whose filter failed, or whose action failed: stays active for a retry */
+        .row-partial { background-color: #fffbeb; border-left: 3px solid #f59e0b; }
+        .row-failed  { background-color: #fef2f2; border-left: 3px solid #ef4444; }
+        .row-outcome-note { font-size: 0.78rem; margin-top: 4px; }
+        .row-partial .row-outcome-note { color: #92400e; }
+        .row-failed .row-outcome-note { color: #b91c1c; }
 
         .row-ai-applied { background-color: #eff6ff; border-left: 3px solid #3b82f6; }
 
@@ -751,7 +757,10 @@
                 selectedValue = row.processedAction;
                 rowClass = 'row-processed';
                 isDisabled = true;
-            } else if (pendingActions[row.email]) {
+            } else if (row.outcome) {
+                rowClass = row.outcome === 'partial' ? 'row-partial' : 'row-failed';
+            }
+            if (!row.processedAction && pendingActions[row.email]) {
                 const pending = pendingActions[row.email];
                 if (pending.action === 'delete') selectedValue = 'delete';
                 else if (pending.action === 'label') selectedValue = `label:${pending.labelId}`;
@@ -812,6 +821,12 @@
             }
 
             emailCell.appendChild(emailLine);
+            if (!row.processedAction && row.outcomeNote) {
+                const note = document.createElement('div');
+                note.className = 'row-outcome-note';
+                note.textContent = row.outcomeNote;
+                emailCell.appendChild(note);
+            }
 
             // Chevron lives in the count cell (right side), hidden on desktop via CSS
             const countCell = tr.querySelector('td:nth-child(3)');
@@ -1542,13 +1557,32 @@
                         const jsonLog = JSON.parse(line);
                         
                         // Real-time row update logic
-                        if (jsonLog.status === 'row_complete') {
+                        if (jsonLog.status === 'row_complete' && (jsonLog.outcome === 'partial' || jsonLog.outcome === 'error')) {
+                            // Not fully done: keep the row active (no strike-through) and keep its pending action,
+                            // so "Apply Actions" retries it. A partial row already has its emails labeled.
                             const row = allData.find(d => d.email === jsonLog.email);
                             if (row) {
+                                row.outcome = jsonLog.outcome;
+                                row.outcomeNote = jsonLog.outcome === 'partial'
+                                    ? 'Emails labeled, but the filter for future emails failed. Click Apply Actions to retry.'
+                                    : 'This action failed. Click Apply Actions to retry.';
+                                if (jsonLog.outcome === 'partial' && !row.partialCounted) {
+                                    row.partialCounted = true;
+                                    sessionOrganizedCount += row.count;
+                                    currentInboxCount = Math.max(0, currentInboxCount - row.count);
+                                }
+                            }
+                            if (jsonLog.msg) logToScanDebugger(jsonLog.msg, jsonLog.outcome === 'error' ? 'error' : 'warn');
+                        } else if (jsonLog.status === 'row_complete') {
+                            const row = allData.find(d => d.email === jsonLog.email);
+                            if (row) {
+                                row.outcome = null; row.outcomeNote = null;
                                 row.processedAction = jsonLog.action;
                                 delete pendingActions[jsonLog.email];
-                                sessionOrganizedCount += row.count;
-                                currentInboxCount = Math.max(0, currentInboxCount - row.count);
+                                if (!row.partialCounted) {
+                                    sessionOrganizedCount += row.count;
+                                    currentInboxCount = Math.max(0, currentInboxCount - row.count);
+                                }
                                 const inboxDisplay = document.getElementById('inbox-count-display');
                                 if (inboxDisplay) inboxDisplay.textContent = currentInboxCount.toLocaleString() + ' emails';
                             }

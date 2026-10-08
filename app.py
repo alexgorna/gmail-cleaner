@@ -546,9 +546,14 @@ def apply_actions():
                                     userId='me', body={**modify_body, 'ids': ids}))
                                 except: pass
 
+                        # Show what the page asked for, so a surprising filter attempt can be traced
+                        settings = (f" [skip inbox {'on' if skip_inbox else 'off'}, "
+                                    f"auto label {'on' if auto_label else 'off'}]")
+                        partial = '⚠' in filter_note
                         return {"status": "row_complete", "email": email,
                                 "action": f"label:{label_id}",
-                                "msg": f"  - {email}: labelled {len(msgs)} emails{filter_note}."}
+                                "outcome": "partial" if partial else "ok",
+                                "msg": f"  - {email}: labelled {len(msgs)} emails{settings}{filter_note}."}
 
                 else:
                     return {"status": "row_complete", "email": email,
@@ -556,7 +561,7 @@ def apply_actions():
 
             except Exception as e:
                 return {"status": "row_complete", "email": email,
-                        "action": "error", "msg": f"  - {email}: error — {str(e)}"}
+                        "action": "error", "outcome": "error", "msg": f"  - {email}: error — {str(e)}"}
 
         yield json.dumps({"msg": f"Starting {len(actions)} actions ({PARALLEL_WORKERS} parallel)..."}) + "\n"
 
